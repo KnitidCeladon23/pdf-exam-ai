@@ -1,3 +1,4 @@
+import PDFList from '@/components/PDFList';
 import PDFUpload from '@/components/PDFUpload';
 
 export default function Home() {
@@ -13,6 +14,7 @@ export default function Home() {
           </p>
         </div>
         <PDFUpload />
+        <PDFList />
       </div>
     </div>
   );
