@@ -112,23 +112,6 @@ export default function PDFUpload() {
     return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
   };
 
-  const simulateUpload = async (file: PDFFile): Promise<void> => {
-    return new Promise((resolve) => {
-      let progress = 0;
-      const interval = setInterval(() => {
-        progress += Math.random() * 30;
-        if (progress >= 100) {
-          progress = 100;
-          clearInterval(interval);
-          setUploadProgress((prev) => ({ ...prev, [file.id]: 100 }));
-          resolve();
-        } else {
-          setUploadProgress((prev) => ({ ...prev, [file.id]: progress }));
-        }
-      }, 200);
-    });
-  };
-
   const handleUpload = async () => {
     if (files.length === 0) return;
 
@@ -142,22 +125,39 @@ export default function PDFUpload() {
     setUploadProgress(initialProgress);
 
     try {
-      // Simulate uploading files
-      await Promise.all(files.map((file) => simulateUpload(file)));
+      // Prepare form data
+      const formData = new FormData();
+      files.forEach((pdfFile) => {
+        formData.append('files', pdfFile.file);
+        setUploadProgress((prev) => ({ ...prev, [pdfFile.id]: 50 }));
+      });
+
+      // Send to API
+      const response = await fetch('/api/upload', { 
+        method: 'POST', 
+        body: formData 
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Upload failed');
+      }
+
+      const result = await response.json();
       
-      // Here you would typically send the files to your API
-      // const formData = new FormData();
-      // files.forEach((pdfFile) => {
-      //   formData.append('files', pdfFile.file);
-      // });
-      // await fetch('/api/upload', { method: 'POST', body: formData });
+      // Set all files to 100% complete
+      const completedProgress: UploadProgress = {};
+      files.forEach((file) => {
+        completedProgress[file.id] = 100;
+      });
+      setUploadProgress(completedProgress);
       
-      alert('Upload successful!');
+      alert(`Upload successful! ${result.exams.length} file(s) uploaded.`);
       setFiles([]);
       setUploadProgress({});
     } catch (error) {
       console.error('Upload failed:', error);
-      alert('Upload failed. Please try again.');
+      alert(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setIsUploading(false);
     }
