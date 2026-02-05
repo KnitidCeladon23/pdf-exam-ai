@@ -30,3 +30,5 @@ Assumptions:
 - Questions are indexed by numbers, and may include sub-parts.
 
 2. Design a simple interface for user to upload PDF. Allow the user to either browse through PC directory, or drag file into an area. Allow multiple uploads. Limit file type to only PDF and set a size limit for 10MB. List the names of the PDF that has been selected, include the option to remove any PDFs from the list. Have an upload button and cancel button. Show progress bar of upload.
+
+3. 
