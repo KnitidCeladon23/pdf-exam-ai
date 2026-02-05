@@ -152,9 +152,15 @@ export default function PDFUpload() {
       });
       setUploadProgress(completedProgress);
       
-      alert(`Upload successful! ${result.exams.length} file(s) uploaded.`);
+      // alert(`Upload successful! ${result.exams.length} file(s) uploaded.`);
       setFiles([]);
       setUploadProgress({});
+      // Notify other components (e.g., PDFList) to refresh
+      try {
+        window.dispatchEvent(new CustomEvent('pdfsUploaded', { detail: { exams: result.exams } }));
+      } catch (e) {
+        // ignore in non-browser environments
+      }
     } catch (error) {
       console.error('Upload failed:', error);
       alert(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`);

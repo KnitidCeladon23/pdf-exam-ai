@@ -7,7 +7,10 @@ export async function GET(
   { params }: { params: { id: string } }
 ) {
   try {
-    const response = await fetch(`${BACKEND_URL}/api/exams/${params.id}`, {
+    // params may itself be a Promise in Next dev — resolve if needed
+    const resolvedParams = (params && typeof (params as any).then === 'function') ? await (params as any) : params;
+    const id = typeof resolvedParams?.id === 'string' ? resolvedParams.id : await (resolvedParams?.id as unknown as Promise<string>);
+    const response = await fetch(`${BACKEND_URL}/api/exams/${id}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -39,8 +42,10 @@ export async function PUT(
 ) {
   try {
     const body = await request.json();
-    
-    const response = await fetch(`${BACKEND_URL}/api/exams/${params.id}`, {
+    const resolvedParams = (params && typeof (params as any).then === 'function') ? await (params as any) : params;
+    const id = typeof resolvedParams?.id === 'string' ? resolvedParams.id : await (resolvedParams?.id as unknown as Promise<string>);
+
+    const response = await fetch(`${BACKEND_URL}/api/exams/${id}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -72,7 +77,10 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   try {
-    const response = await fetch(`${BACKEND_URL}/api/exams/${params.id}`, {
+    const resolvedParams = (params && typeof (params as any).then === 'function') ? await (params as any) : params;
+    const id = typeof resolvedParams?.id === 'string' ? resolvedParams.id : await (resolvedParams?.id as unknown as Promise<string>);
+
+    const response = await fetch(`${BACKEND_URL}/api/exams/${id}`, {
       method: 'DELETE',
       headers: {
         'Content-Type': 'application/json',

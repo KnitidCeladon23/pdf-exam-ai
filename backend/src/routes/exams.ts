@@ -91,15 +91,26 @@ router.put('/:id', async (req: Request, res: Response) => {
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const rawId = Array.isArray(id) ? id[0] : id;
+    const parsedId = parseInt(rawId, 10);
 
-    await prisma.exam.delete({
-      where: { id: parseInt(Array.isArray(id) ? id[0] : id) },
-    });
+    if (isNaN(parsedId)) {
+      return res.status(400).json({ error: 'Invalid exam id' });
+    }
 
-    res.json({ message: 'Exam deleted successfully' });
+    try {
+      await prisma.exam.delete({ where: { id: parsedId } });
+      return res.json({ message: 'Exam deleted successfully' });
+    } catch (err: any) {
+      // Prisma throws P2025 when record not found
+      if (err?.code === 'P2025') {
+        return res.status(404).json({ error: 'Exam not found' });
+      }
+      throw err;
+    }
   } catch (error) {
     console.error('Error deleting exam:', error);
-    res.status(500).json({ error: 'Failed to delete exam' });
+    res.status(500).json({ error: 'Failed to delete exam', message: error instanceof Error ? error.message : String(error) });
   }
 });
 

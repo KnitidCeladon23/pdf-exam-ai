@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import uploadRoutes from './routes/upload';
 import examRoutes from './routes/exams';
+import path from 'path';
 
 dotenv.config();
 
@@ -15,6 +16,12 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Serve uploaded files from /uploads
+// In dev (ts-node-dev): __dirname is backend/src, so go up 1 level
+// In production (dist/): __dirname is backend/dist, so go up 1 level
+const uploadsDir = path.join(__dirname, '../uploads');
+app.use('/uploads', express.static(uploadsDir));
 
 // Routes
 app.get('/health', (req: Request, res: Response) => {
