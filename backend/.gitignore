@@ -10,6 +10,12 @@ package-lock.json
 # Prisma
 generated/
 
+# Build output
+dist/
+
+# Uploads
+uploads/
+
 # Logs
 logs
 *.log
