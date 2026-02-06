@@ -31,7 +31,7 @@ model Question {
   part    String?
   text    String    @db.Text
   type    String    // "MCQ" or "Open-ended"
-  image   String?
+  image   String[]  @default([])
   options String[]  @default([])
   exam    Exam      @relation(fields: [examId], references: [id], onDelete: Cascade)
   answers Answer[]
