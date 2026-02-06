@@ -172,17 +172,18 @@ export default function PDFList() {
                   </>
                 ) : (
                   <>
-                    <a href={proxyLink} target="_blank" rel="noreferrer" className="px-3 py-1 bg-blue-600 text-white rounded-md text-sm">Open</a>
+                    <a href={proxyLink} target="_blank" rel="noreferrer" className="px-3 py-1 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700">Open PDF</a>
+                    <a href={`/exam/${exam.id}`} className="px-3 py-1 bg-green-600 text-white rounded-md text-sm hover:bg-green-700">View Exam</a>
                     <button
                       onClick={() => handleEdit(exam)}
-                      className="px-3 py-1 bg-yellow-600 text-white rounded-md text-sm"
+                      className="px-3 py-1 bg-yellow-600 text-white rounded-md text-sm hover:bg-yellow-700"
                     >
                       Edit
                     </button>
                     <button
                       onClick={() => handleDelete(exam.id)}
                       disabled={deletingId === exam.id}
-                      className="px-3 py-1 bg-red-600 text-white rounded-md text-sm disabled:opacity-50"
+                      className="px-3 py-1 bg-red-600 text-white rounded-md text-sm disabled:opacity-50 hover:bg-red-700"
                     >
                       {deletingId === exam.id ? 'Deleting…' : 'Delete'}
                     </button>
