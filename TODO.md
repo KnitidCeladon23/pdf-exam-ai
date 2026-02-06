@@ -41,3 +41,11 @@ Assumptions:
 - LLM Processing (GPT + Claude)
 - Validation
 - Database Population
+
+5. Create a chatbot component that students can use to ask for explanations to the solutions of each question
+
+6. Create unit tests to ensure integrity of the application for the frontend and backend
+
+7. After the processing of the answers, have the LLM also generate an answer based on the question, and raise an indicator if the answer processed from the pdf file is inaccurate or incorrect (perhaps due to low pdf image quality, or a typo).
+
+8. Create a docker configuration to host the web application on the server.
