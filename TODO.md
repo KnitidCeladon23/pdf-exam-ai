@@ -4,6 +4,7 @@ To-dos:
 1. Design a schema to handle inputs:
     - Exam
         - id int
+        - name string
         - url string
         - subject string
         - questions Question[]
