@@ -1,5 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
+import { parseExamPDF } from '../services/examParser';
+import fs from 'fs';
+import path from 'path';
 
 const router = Router();
 
@@ -46,6 +49,156 @@ router.get('/:id', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching exam:', error);
     res.status(500).json({ error: 'Failed to fetch exam' });
+  }
+});
+
+// Parse exam PDF and populate questions/answers
+router.post('/:id/parse', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const examId = parseInt(Array.isArray(id) ? id[0] : id);
+    
+    // Get exam record
+    const exam = await prisma.exam.findUnique({
+      where: { id: examId },
+    });
+
+    if (!exam) {
+      return res.status(404).json({ error: 'Exam not found' });
+    }
+
+    // Check if already parsed
+    if (exam.parsed) {
+      return res.status(400).json({ 
+        error: 'Exam already parsed',
+        message: 'This exam has already been parsed. Use GET /:id to retrieve it.'
+      });
+    }
+
+    // Read PDF file
+    const uploadsDir = path.join(__dirname, '../../uploads');
+    const filename = path.basename(exam.url);
+    const filePath = path.join(uploadsDir, filename);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'PDF file not found' });
+    }
+
+    const pdfBuffer = fs.readFileSync(filePath);
+    
+    // Get provider from query params
+    // 'both' = use both OpenAI and Claude for maximum accuracy (default)
+    const provider = (req.query.provider as 'openai' | 'anthropic' | 'both') || 'both';
+    
+    // Parse PDF and populate database (pass examId to update existing exam)
+    console.log(`\n📄 Parsing exam ${examId}: ${exam.name} (provider: ${provider})`);
+    const result = await parseExamPDF(pdfBuffer, exam.name, exam.url, provider, 3, examId);
+    
+    // Note: No need to update parsed flag here - populateDatabase handles it
+    
+    res.json({
+      success: true,
+      message: 'Exam parsed successfully',
+      examId: result.examId,
+      metadata: result.metadata,
+      processingTime: result.processingTime,
+    });
+  } catch (error) {
+    console.error('Error parsing exam:', error);
+    res.status(500).json({ 
+      error: 'Failed to parse exam',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+// Parse exam PDF with Server-Sent Events for progress updates
+router.get('/:id/parse/stream', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const examId = parseInt(Array.isArray(id) ? id[0] : id);
+    
+    // Get exam record
+    const exam = await prisma.exam.findUnique({
+      where: { id: examId },
+    });
+
+    if (!exam) {
+      return res.status(404).json({ error: 'Exam not found' });
+    }
+
+    // Check if already parsed
+    if (exam.parsed) {
+      return res.status(400).json({ 
+        error: 'Exam already parsed',
+        message: 'This exam has already been parsed. Use GET /:id to retrieve it.'
+      });
+    }
+
+    // Read PDF file
+    const uploadsDir = path.join(__dirname, '../../uploads');
+    const filename = path.basename(exam.url);
+    const filePath = path.join(uploadsDir, filename);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'PDF file not found' });
+    }
+
+    const pdfBuffer = fs.readFileSync(filePath);
+    
+    // Get provider from query params
+    const provider = (req.query.provider as 'openai' | 'anthropic' | 'both') || 'both';
+    
+    // Set up SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // Disable buffering in nginx
+    
+    // Send initial connection message
+    res.write(`data: ${JSON.stringify({ type: 'start', message: 'Starting parse...' })}\n\n`);
+    
+    // Parse PDF with progress callback
+    console.log(`\n📄 Parsing exam ${examId}: ${exam.name} (provider: ${provider}) with SSE`);
+    
+    try {
+      const result = await parseExamPDF(
+        pdfBuffer, 
+        exam.name, 
+        exam.url, 
+        provider, 
+        3, 
+        examId,
+        (progress: number, message: string) => {
+          // Send progress update via SSE
+          res.write(`data: ${JSON.stringify({ type: 'progress', progress, message })}\n\n`);
+        }
+      );
+      
+      // Send completion message
+      res.write(`data: ${JSON.stringify({ 
+        type: 'complete', 
+        examId: result.examId,
+        metadata: result.metadata,
+        processingTime: result.processingTime
+      })}\n\n`);
+      
+      res.end();
+    } catch (parseError) {
+      // Send error message
+      res.write(`data: ${JSON.stringify({ 
+        type: 'error', 
+        message: parseError instanceof Error ? parseError.message : 'Parse failed'
+      })}\n\n`);
+      res.end();
+    }
+    
+  } catch (error) {
+    console.error('Error in SSE parsing endpoint:', error);
+    res.status(500).json({ 
+      error: 'Failed to initiate parse',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
   }
 });
 
@@ -153,17 +306,18 @@ router.post('/:id/questions', async (req: Request, res: Response) => {
 router.post('/:examId/questions/:questionId/answers', async (req: Request, res: Response) => {
   try {
     const { examId, questionId } = req.params;
-    const { text } = req.body;
+    const { textFromPdf, textFromAi } = req.body;
 
-    if (!text) {
-      return res.status(400).json({ error: 'Answer text is required' });
+    if (!textFromAi) {
+      return res.status(400).json({ error: 'Answer textFromAi is required' });
     }
 
     const answer = await prisma.answer.create({
       data: {
         examId: parseInt(Array.isArray(examId) ? examId[0] : examId),
         questionId: parseInt(Array.isArray(questionId) ? questionId[0] : questionId),
-        text,
+        textFromPdf: textFromPdf || null,
+        textFromAi,
       },
     });
 

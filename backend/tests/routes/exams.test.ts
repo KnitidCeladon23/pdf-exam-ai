@@ -1,6 +1,8 @@
 import request from 'supertest';
 import app from '../../src/app';
 import { prisma } from '../../src/lib/prisma';
+import * as examParser from '../../src/services/examParser';
+import fs from 'fs';
 
 // Mock Prisma
 jest.mock('../../src/lib/prisma', () => ({
@@ -20,6 +22,12 @@ jest.mock('../../src/lib/prisma', () => ({
     },
   },
 }));
+
+// Mock examParser service
+jest.mock('../../src/services/examParser');
+
+// Mock fs
+jest.mock('fs');
 
 describe('Exams Routes', () => {
   beforeEach(() => {
@@ -218,7 +226,7 @@ describe('Exams Routes', () => {
 
   describe('POST /api/exams/:examId/questions/:questionId/answers', () => {
     it('should add an answer', async () => {
-      const answerData = { text: 'The answer is 4' };
+      const answerData = { textFromPdf: 'The answer is 4', textFromAi: 'The answer is 4' };
 
       const mockAnswer = {
         id: 1,
@@ -238,13 +246,98 @@ describe('Exams Routes', () => {
       expect(response.body).toEqual(mockAnswer);
     });
 
-    it('should return 400 if text is missing', async () => {
+    it('should return 400 if textFromAi is missing', async () => {
       const response = await request(app)
         .post('/api/exams/1/questions/1/answers')
         .send({})
         .expect(400);
 
       expect(response.body).toHaveProperty('error');
+    });
+  });
+
+  describe('POST /api/exams/:id/parse', () => {
+    it('should parse an unparsed exam', async () => {
+      const mockExam = {
+        id: 1,
+        url: '/uploads/test.pdf',
+        name: 'Test Exam',
+        subject: 'Unknown',
+        parsed: false,
+      };
+
+      const mockParseResult = {
+        examId: 1,
+        metadata: {
+          totalQuestions: 10,
+          mcqCount: 8,
+          openEndedCount: 2,
+        },
+        processingTime: 5230,
+      };
+
+      (prisma.exam.findUnique as jest.Mock).mockResolvedValue(mockExam);
+      (prisma.exam.update as jest.Mock).mockResolvedValue({ ...mockExam, parsed: true });
+      jest.spyOn(fs, 'existsSync').mockReturnValue(true);
+      jest.spyOn(fs, 'readFileSync').mockReturnValue(Buffer.from('mock pdf'));
+      jest.spyOn(examParser, 'parseExamPDF').mockResolvedValue(mockParseResult);
+
+      const response = await request(app)
+        .post('/api/exams/1/parse')
+        .expect(200);
+
+      expect(response.body).toHaveProperty('success', true);
+      expect(response.body).toHaveProperty('message', 'Exam parsed successfully');
+      expect(response.body).toHaveProperty('metadata');
+      // Note: prisma.exam.update is now called inside populateDatabase, not in the route handler
+      expect(examParser.parseExamPDF).toHaveBeenCalled();
+    });
+
+    it('should return 404 if exam not found', async () => {
+      (prisma.exam.findUnique as jest.Mock).mockResolvedValue(null);
+
+      const response = await request(app)
+        .post('/api/exams/999/parse')
+        .expect(404);
+
+      expect(response.body).toHaveProperty('error', 'Exam not found');
+    });
+
+    it('should return 400 if exam already parsed', async () => {
+      const mockExam = {
+        id: 1,
+        url: '/uploads/test.pdf',
+        name: 'Test Exam',
+        subject: 'Mathematics',
+        parsed: true,
+      };
+
+      (prisma.exam.findUnique as jest.Mock).mockResolvedValue(mockExam);
+
+      const response = await request(app)
+        .post('/api/exams/1/parse')
+        .expect(400);
+
+      expect(response.body).toHaveProperty('error', 'Exam already parsed');
+    });
+
+    it('should return 404 if PDF file not found', async () => {
+      const mockExam = {
+        id: 1,
+        url: '/uploads/missing.pdf',
+        name: 'Test Exam',
+        subject: 'Unknown',
+        parsed: false,
+      };
+
+      (prisma.exam.findUnique as jest.Mock).mockResolvedValue(mockExam);
+      jest.spyOn(fs, 'existsSync').mockReturnValue(false);
+
+      const response = await request(app)
+        .post('/api/exams/1/parse')
+        .expect(404);
+
+      expect(response.body).toHaveProperty('error', 'PDF file not found');
     });
   });
 });

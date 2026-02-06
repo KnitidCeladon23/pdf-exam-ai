@@ -151,7 +151,8 @@ async function main() {
       data: {
         examId: exam.id,
         questionId: question.id,
-        text: qData.answer,
+        textFromPdf: qData.answer,
+        textFromAi: qData.answer,
       },
     });
 
