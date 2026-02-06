@@ -7,6 +7,7 @@ interface PDFFile {
   file: File;
   name: string;
   size: number;
+  customName: string;
 }
 
 interface UploadProgress {
@@ -46,6 +47,7 @@ export default function PDFUpload() {
           file,
           name: file.name,
           size: file.size,
+          customName: file.name,
         };
         newFiles.push(pdfFile);
       }
@@ -106,6 +108,14 @@ export default function PDFUpload() {
     });
   };
 
+  const updateCustomName = (id: string, customName: string) => {
+    setFiles((prev) =>
+      prev.map((file) =>
+        file.id === id ? { ...file, customName } : file
+      )
+    );
+  };
+
   const formatFileSize = (bytes: number): string => {
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
@@ -129,6 +139,7 @@ export default function PDFUpload() {
       const formData = new FormData();
       files.forEach((pdfFile) => {
         formData.append('files', pdfFile.file);
+        formData.append('customNames', pdfFile.customName);
         setUploadProgress((prev) => ({ ...prev, [pdfFile.id]: 50 }));
       });
 
@@ -253,10 +264,16 @@ export default function PDFUpload() {
                   className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200"
                 >
                   <div className="flex-1 min-w-0 mr-4">
-                    <p className="text-sm font-medium text-gray-900 truncate">
-                      {file.name}
-                    </p>
-                    <p className="text-xs text-gray-500">{formatFileSize(file.size)}</p>
+                    <p className="text-xs text-gray-500 mb-1">Original: {file.name}</p>
+                    <input
+                      type="text"
+                      value={file.customName}
+                      onChange={(e) => updateCustomName(file.id, e.target.value)}
+                      disabled={isUploading}
+                      placeholder="Enter file name"
+                      className="w-full text-sm font-medium text-gray-900 px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">{formatFileSize(file.size)}</p>
                     {uploadProgress[file.id] !== undefined && (
                       <div className="mt-2">
                         <div className="w-full bg-gray-200 rounded-full h-2">

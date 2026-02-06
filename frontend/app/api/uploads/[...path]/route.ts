@@ -2,8 +2,15 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 
-export async function GET(request: NextRequest, { params }: { params?: { path?: string[] } } = {}) {
+export async function GET(
+  request: NextRequest, 
+  { params }: { params: Promise<{ path: string[] }> | { path: string[] } } = { params: { path: [] } }
+) {
   try {
+    // Resolve params if it's a Promise (Next.js 16 behavior)
+    const resolvedParams = params && typeof (params as any).then === 'function' ? await (params as any) : params;
+    const pathSegments = resolvedParams?.path || [];
+    
     // Try to extract path segments robustly. In dev the params may be a Promise or missing.
     // Prefer using the request pathname so encoded names are preserved.
     const urlPath = request.nextUrl?.pathname || new URL(request.url).pathname;
@@ -12,8 +19,8 @@ export async function GET(request: NextRequest, { params }: { params?: { path?: 
     let tail = '';
     if (urlPath.startsWith(prefix)) {
       tail = urlPath.slice(prefix.length);
-    } else if (params && Array.isArray(params.path) && params.path.length > 0) {
-      tail = params.path.map(String).join('/');
+    } else if (Array.isArray(pathSegments) && pathSegments.length > 0) {
+      tail = pathSegments.map(String).join('/');
     }
 
     if (!tail) {

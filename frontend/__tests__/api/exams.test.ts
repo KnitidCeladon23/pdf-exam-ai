@@ -10,7 +10,7 @@ describe('Exams API Route', () => {
   describe('GET /api/exams', () => {
     it('should fetch exams from backend', async () => {
       const mockExams = [
-        { id: 1, url: '/uploads/test.pdf', subject: 'Math' },
+        { id: 1, url: '/uploads/test.pdf', name: 'Math Exam', subject: 'Math' },
       ];
 
       global.fetch = jest.fn().mockResolvedValue({
@@ -36,7 +36,7 @@ describe('Exams API Route', () => {
 
   describe('POST /api/exams', () => {
     it('should create an exam', async () => {
-      const newExam = { url: '/uploads/test.pdf', subject: 'Science' };
+      const newExam = { url: '/uploads/test.pdf', name: 'Science Exam', subject: 'Science' };
 
       global.fetch = jest.fn().mockResolvedValue({
         ok: true,
@@ -55,6 +55,7 @@ describe('Exam by ID API Route', () => {
       const mockExam = {
         id: 1,
         url: '/uploads/test.pdf',
+        name: 'Math Exam',
         subject: 'Math',
         questions: [],
       };
@@ -82,7 +83,7 @@ describe('Exam by ID API Route', () => {
 
   describe('PUT /api/exams/[id]', () => {
     it('should update an exam', async () => {
-      const updateData = { url: '/uploads/updated.pdf', subject: 'Updated' };
+      const updateData = { url: '/uploads/updated.pdf', name: 'Updated Name', subject: 'Updated' };
 
       global.fetch = jest.fn().mockResolvedValue({
         ok: true,

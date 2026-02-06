@@ -208,4 +208,79 @@ describe('PDFUpload Component', () => {
       });
     }
   });
+
+  it('displays custom name input for each selected file', async () => {
+    render(<PDFUpload />);
+    
+    const file = new File(['test'], 'test.pdf', { type: 'application/pdf' });
+    const fileInput = screen.getByRole('button', { name: /browse files/i }).parentElement?.querySelector('input[type="file"]') as HTMLInputElement;
+
+    if (fileInput) {
+      await userEvent.upload(fileInput, file);
+      
+      await waitFor(() => {
+        const customNameInput = screen.getByPlaceholderText('Enter file name');
+        expect(customNameInput).toBeInTheDocument();
+        expect(customNameInput).toHaveValue('test.pdf');
+      });
+    }
+  });
+
+  it('allows updating custom file name', async () => {
+    render(<PDFUpload />);
+    
+    const file = new File(['test'], 'test.pdf', { type: 'application/pdf' });
+    const fileInput = screen.getByRole('button', { name: /browse files/i }).parentElement?.querySelector('input[type="file"]') as HTMLInputElement;
+
+    if (fileInput) {
+      await userEvent.upload(fileInput, file);
+      
+      const customNameInput = await screen.findByPlaceholderText('Enter file name');
+      await userEvent.clear(customNameInput);
+      await userEvent.type(customNameInput, 'renamed-file.pdf');
+
+      await waitFor(() => {
+        expect(customNameInput).toHaveValue('renamed-file.pdf');
+      });
+    }
+  });
+
+  it('sends custom names with upload request', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        success: true,
+        exams: [{ id: 1, filename: 'custom-name.pdf' }],
+      }),
+    });
+
+    render(<PDFUpload />);
+    
+    const file = new File(['test'], 'test.pdf', { type: 'application/pdf' });
+    const fileInput = screen.getByRole('button', { name: /browse files/i }).parentElement?.querySelector('input[type="file"]') as HTMLInputElement;
+
+    if (fileInput) {
+      await userEvent.upload(fileInput, file);
+      
+      const customNameInput = await screen.findByPlaceholderText('Enter file name');
+      await userEvent.clear(customNameInput);
+      await userEvent.type(customNameInput, 'custom-name.pdf');
+
+      const uploadButton = await screen.findByRole('button', { name: /upload 1 file/i });
+      fireEvent.click(uploadButton);
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          '/api/upload',
+          expect.objectContaining({
+            method: 'POST',
+          })
+        );
+        
+        const callArgs = (global.fetch as jest.Mock).mock.calls[0];
+        const formData = callArgs[1].body as FormData;
+        expect(formData.get('customNames')).toBe('custom-name.pdf');
+      });
+    }
+  });
 });
