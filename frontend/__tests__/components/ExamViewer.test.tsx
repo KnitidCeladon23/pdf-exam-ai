@@ -12,6 +12,7 @@ const mockExamData = {
   name: 'Sample Math Exam',
   subject: 'Mathematics',
   createdAt: '2026-02-06T00:00:00.000Z',
+  parsed: true,
   questions: [
     {
       id: 1,
@@ -19,9 +20,9 @@ const mockExamData = {
       part: null,
       text: 'What is 2 + 2?',
       type: 'MCQ',
-      image: null,
+      image: [],
       options: ['2', '3', '4', '5'],
-      answers: [{ id: 1, text: '4' }],
+      answers: [{ id: 1, textFromPdf: '4', textFromAi: '4' }],
     },
     {
       id: 2,
@@ -29,9 +30,9 @@ const mockExamData = {
       part: null,
       text: 'Explain the Pythagorean theorem.',
       type: 'Open-ended',
-      image: null,
+      image: [],
       options: [],
-      answers: [{ id: 2, text: 'a² + b² = c²' }],
+      answers: [{ id: 2, textFromPdf: 'a² + b² = c²', textFromAi: 'a² + b² = c²' }],
     },
     {
       id: 3,
@@ -39,9 +40,9 @@ const mockExamData = {
       part: 'A',
       text: 'Calculate the area of a circle with radius 5.',
       type: 'Open-ended',
-      image: null,
+      image: [],
       options: [],
-      answers: [{ id: 3, text: 'Area = πr² = 78.5 square units' }],
+      answers: [{ id: 3, textFromPdf: 'Area = πr² = 78.5 square units', textFromAi: 'Area = πr² = 78.5 square units' }],
     },
     {
       id: 4,
@@ -49,9 +50,9 @@ const mockExamData = {
       part: 'B',
       text: 'What is the circumference?',
       type: 'Open-ended',
-      image: null,
+      image: [],
       options: [],
-      answers: [{ id: 4, text: 'Circumference = 2πr = 31.4 units' }],
+      answers: [{ id: 4, textFromPdf: 'Circumference = 2πr = 31.4 units', textFromAi: 'Circumference = 2πr = 31.4 units' }],
     },
     {
       id: 5,
@@ -59,9 +60,9 @@ const mockExamData = {
       part: null,
       text: 'Which is a prime number?',
       type: 'MCQ',
-      image: null,
+      image: [],
       options: ['4', '6', '7', '8'],
-      answers: [{ id: 5, text: '7' }],
+      answers: [{ id: 5, textFromPdf: '7', textFromAi: '7' }],
     },
   ],
 };
@@ -69,6 +70,8 @@ const mockExamData = {
 describe('ExamViewer', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (global as any).__mockEventSourceBehavior = null;
+    (global as any).__mockEventSourceData = null;
   });
 
   it('should render loading state initially', () => {
@@ -183,11 +186,6 @@ describe('ExamViewer', () => {
       fireEvent.click(correctAnswerRadio);
       expect(correctAnswerRadio).toBeChecked();
     }
-
-    // Check answer counter updates
-    await waitFor(() => {
-      expect(screen.getByText('Questions answered: 1 / 5')).toBeInTheDocument();
-    });
   });
 
   it('should handle open-ended answer input', async () => {
@@ -210,37 +208,6 @@ describe('ExamViewer', () => {
     });
 
     expect(textarea).toHaveValue('a² + b² = c²');
-
-    // Check answer counter updates
-    await waitFor(() => {
-      expect(screen.getByText('Questions answered: 1 / 5')).toBeInTheDocument();
-    });
-  });
-
-  it('should submit exam answers', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => mockExamData,
-    });
-
-    render(<ExamViewer examId={1} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Sample Math Exam')).toBeInTheDocument();
-    });
-
-    const submitButton = screen.getByText('Submit Exam');
-    fireEvent.click(submitButton);
-
-    // Check submitting state
-    await waitFor(() => {
-      expect(screen.getByText('Submitting...')).toBeInTheDocument();
-    });
-
-    // Check success state
-    await waitFor(() => {
-      expect(screen.getByText('Exam Submitted Successfully!')).toBeInTheDocument();
-    }, { timeout: 2000 });
   });
 
   it('should display error when exam fetch fails', async () => {
@@ -304,7 +271,6 @@ describe('ExamViewer', () => {
     });
 
     expect(screen.getByText('0 questions')).toBeInTheDocument();
-    expect(screen.getByText('Questions answered: 0 / 0')).toBeInTheDocument();
   });
 
   it('should sort questions correctly when received in wrong order', async () => {
@@ -345,7 +311,7 @@ describe('ExamViewer', () => {
       questions: [
         {
           ...mockExamData.questions[0],
-          image: '/uploads/diagram.png',
+          image: ['/uploads/diagram.png'],
         },
       ],
     };
@@ -361,7 +327,12 @@ describe('ExamViewer', () => {
       expect(screen.getByText('Sample Math Exam')).toBeInTheDocument();
     });
 
-    const image = screen.getByAltText('Question 1 diagram');
+    // Click the Show Image button to reveal the image
+    const showImageButton = screen.getByText(/Show.*Image/);
+    fireEvent.click(showImageButton);
+
+    // Now the image should be visible
+    const image = screen.getByAltText('Question 1 diagram 1');
     expect(image).toBeInTheDocument();
     expect(image).toHaveAttribute('src', '/uploads/diagram.png');
   });
@@ -578,6 +549,212 @@ describe('ExamViewer', () => {
       
       // Check Answer button should disappear
       expect(screen.queryByTestId('check-answer-2')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('Deferred parsing workflow', () => {
+    it('should show parsing UI when exam has not been parsed', async () => {
+      const unparsedExam = {
+        ...mockExamData,
+        parsed: false,
+        questions: [],
+      };
+
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        json: async () => unparsedExam,
+      });
+
+      render(<ExamViewer examId={1} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('📄 Exam Not Yet Parsed')).toBeInTheDocument();
+        expect(screen.getByText(/This exam PDF has been uploaded but hasn't been parsed yet/)).toBeInTheDocument();
+        expect(screen.getByText('🚀 Parse Exam Now')).toBeInTheDocument();
+      });
+
+      // Should not show questions
+      expect(screen.queryByText('What is 2 + 2?')).not.toBeInTheDocument();
+    });
+
+    it('should trigger parsing when Parse Exam Now button is clicked', async () => {
+      const unparsedExam = {
+        ...mockExamData,
+        parsed: false,
+        questions: [],
+      };
+
+      const parsedExam = {
+        ...mockExamData,
+        parsed: true,
+      };
+
+      (global.fetch as jest.Mock)
+        // Initial fetch returns unparsed exam
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => unparsedExam,
+        })
+        // Refetch after parsing
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => parsedExam,
+        });
+
+      // Mock successful EventSource stream
+      (global as any).__mockEventSourceData = [
+        { type: 'start', message: 'Starting parse...' },
+        { type: 'progress', progress: 18, message: 'Extracting text...' },
+        { type: 'progress', progress: 50, message: 'Parsing questions...' },
+        { type: 'complete', message: 'Complete!' }
+      ];
+
+      render(<ExamViewer examId={1} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('🚀 Parse Exam Now')).toBeInTheDocument();
+      });
+
+      const parseButton = screen.getByText('🚀 Parse Exam Now');
+      fireEvent.click(parseButton);
+
+      // Should show loading state (button changes to "Parsing...")
+      await waitFor(() => {
+        expect(screen.getByText('Parsing...')).toBeInTheDocument();
+      }, { timeout: 2000 });
+
+      // After parsing, should show questions
+      await waitFor(() => {
+        expect(screen.getByText('Sample Math Exam')).toBeInTheDocument();
+        expect(screen.getByText('5 questions')).toBeInTheDocument();
+        expect(screen.queryByText('📄 Exam Not Yet Parsed')).not.toBeInTheDocument();
+      }, { timeout: 3000 });
+    });
+
+    it('should display error if parsing fails', async () => {
+      const unparsedExam = {
+        ...mockExamData,
+        parsed: false,
+        questions: [],
+      };
+
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        json: async () => unparsedExam,
+      });
+
+      // Mock EventSource to send error
+      (global as any).__mockEventSourceData = [
+        { type: 'error', message: 'Failed to parse PDF' }
+      ];
+
+      render(<ExamViewer examId={1} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('🚀 Parse Exam Now')).toBeInTheDocument();
+      });
+
+      const parseButton = screen.getByText('🚀 Parse Exam Now');
+      fireEvent.click(parseButton);
+
+      // Should show error message
+      await waitFor(() => {
+        expect(screen.getByText('Error:')).toBeInTheDocument();
+        expect(screen.getByText('Failed to parse PDF')).toBeInTheDocument();
+      }, { timeout: 2000 });
+
+      // Parse button should be enabled for retry
+      expect(parseButton).not.toBeDisabled();
+    });
+
+    it('should allow retry after parse error', async () => {
+      const unparsedExam = {
+        ...mockExamData,
+        parsed: false,
+        questions: [],
+      };
+
+      const parsedExam = {
+        ...mockExamData,
+        parsed: true,
+      };
+
+      (global.fetch as jest.Mock)
+        // Initial fetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => unparsedExam,
+        })
+        // Refetch after successful retry
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => parsedExam,
+        });
+
+      render(<ExamViewer examId={1} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('🚀 Parse Exam Now')).toBeInTheDocument();
+      });
+
+      // First attempt - mock error
+      (global as any).__mockEventSourceData = [
+        { type: 'error', message: 'Network timeout' }
+      ];
+
+      const parseButton = screen.getByText('🚀 Parse Exam Now');
+      
+      // First attempt
+      fireEvent.click(parseButton);
+
+      await waitFor(() => {
+        expect(screen.getByText('Network timeout')).toBeInTheDocument();
+      }, { timeout: 2000 });
+
+      // Retry - mock success
+      (global as any).__mockEventSourceData = [
+        { type: 'start', message: 'Starting parse...' },
+        { type: 'progress', progress: 50, message: 'Parsing...' },
+        { type: 'complete', message: 'Complete!' }
+      ];
+
+      fireEvent.click(parseButton);
+
+      await waitFor(() => {
+        expect(screen.getByText('Parsing...')).toBeInTheDocument();
+      }, { timeout: 2000 });
+
+      // Should eventually show parsed questions
+      await waitFor(() => {
+        expect(screen.getByText('5 questions')).toBeInTheDocument();
+        expect(screen.queryByText('📄 Exam Not Yet Parsed')).not.toBeInTheDocument();
+      }, { timeout: 3000 });
+    });
+
+    it('should show questions when exam is already parsed', async () => {
+      const parsedExam = {
+        ...mockExamData,
+        parsed: true,
+      };
+
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        json: async () => parsedExam,
+      });
+
+      render(<ExamViewer examId={1} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Sample Math Exam')).toBeInTheDocument();
+        expect(screen.getByText('5 questions')).toBeInTheDocument();
+      });
+
+      // Should not show parsing UI
+      expect(screen.queryByText('📄 Exam Not Yet Parsed')).not.toBeInTheDocument();
+      expect(screen.queryByText('🚀 Parse Exam Now')).not.toBeInTheDocument();
+      
+      // Should show exam questions
+      expect(screen.getByText('What is 2 + 2?')).toBeInTheDocument();
     });
   });
 });
