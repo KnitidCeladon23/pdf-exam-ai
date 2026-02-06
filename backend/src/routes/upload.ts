@@ -46,21 +46,29 @@ router.post('/', upload.array('files', 10), async (req: Request, res: Response) 
       return res.status(400).json({ error: 'No files uploaded' });
     }
 
-    const subject = req.body.subject || 'Unknown';
+    const customNames = req.body.customNames;
+    const customNamesArray = Array.isArray(customNames) ? customNames : [customNames].filter(Boolean);
 
     // Create exam records for each uploaded file
     const exams = await Promise.all(
-      files.map(async (file) => {
+      files.map(async (file, index) => {
+        // Get filename without extension
+        const filenameWithoutExt = path.parse(file.originalname).name;
+        
+        // Use custom name if provided, otherwise use filename without extension
+        const displayName = customNamesArray[index] || filenameWithoutExt;
+        
         const exam = await prisma.exam.create({
           data: {
             url: `/uploads/${file.filename}`,
-            subject: subject,
+            name: displayName,
+            subject: 'Unknown', // Can be updated later or extracted from PDF
           }
         });
         
         return {
           id: exam.id,
-          filename: file.originalname,
+          filename: displayName,
           path: exam.url,
           size: file.size,
         };

@@ -32,6 +32,7 @@ describe('Exams Routes', () => {
         {
           id: 1,
           url: '/uploads/test.pdf',
+          name: 'Test Exam',
           subject: 'Math',
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -76,6 +77,7 @@ describe('Exams Routes', () => {
       const mockExam = {
         id: 1,
         url: '/uploads/test.pdf',
+        name: 'Test Exam',
         subject: 'Math',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -107,6 +109,7 @@ describe('Exams Routes', () => {
     it('should create a new exam', async () => {
       const newExam = {
         url: '/uploads/test.pdf',
+        name: 'Science Exam',
         subject: 'Science',
       };
 
@@ -126,7 +129,7 @@ describe('Exams Routes', () => {
 
       expect(response.body).toEqual(mockCreatedExam);
       expect(prisma.exam.create).toHaveBeenCalledWith({
-        data: newExam,
+        data: { url: newExam.url, name: newExam.name, subject: newExam.subject || 'Unknown' },
       });
     });
 
@@ -136,7 +139,7 @@ describe('Exams Routes', () => {
         .send({ url: '/uploads/test.pdf' })
         .expect(400);
 
-      expect(response.body).toHaveProperty('error');
+      expect(response.body).toHaveProperty('error', 'URL and name are required');
     });
   });
 
@@ -144,6 +147,7 @@ describe('Exams Routes', () => {
     it('should update an exam', async () => {
       const updateData = {
         url: '/uploads/updated.pdf',
+        name: 'Updated Name',
         subject: 'Updated Subject',
       };
 

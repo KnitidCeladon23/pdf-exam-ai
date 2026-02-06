@@ -52,14 +52,14 @@ router.get('/:id', async (req: Request, res: Response) => {
 // Create new exam
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { url, subject } = req.body;
+    const { url, name, subject } = req.body;
 
-    if (!url || !subject) {
-      return res.status(400).json({ error: 'URL and subject are required' });
+    if (!url || !name) {
+      return res.status(400).json({ error: 'URL and name are required' });
     }
 
     const exam = await prisma.exam.create({
-      data: { url, subject },
+      data: { url, name, subject: subject || 'Unknown' },
     });
 
     res.status(201).json(exam);
@@ -73,11 +73,17 @@ router.post('/', async (req: Request, res: Response) => {
 router.put('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { url, subject } = req.body;
+    const { url, name, subject } = req.body;
+
+    // Build update data object, only including fields that are provided
+    const updateData: any = {};
+    if (url !== undefined) updateData.url = url;
+    if (name !== undefined) updateData.name = name;
+    if (subject !== undefined) updateData.subject = subject;
 
     const exam = await prisma.exam.update({
       where: { id: parseInt(Array.isArray(id) ? id[0] : id) },
-      data: { url, subject },
+      data: updateData,
     });
 
     res.json(exam);

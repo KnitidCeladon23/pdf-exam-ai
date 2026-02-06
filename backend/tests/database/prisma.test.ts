@@ -8,6 +8,7 @@ describe('Prisma Database Tests', () => {
     it('should create a new exam', async () => {
       const examData = {
         url: '/uploads/test.pdf',
+        name: 'Test Exam',
         subject: 'Test Subject',
       };
 
