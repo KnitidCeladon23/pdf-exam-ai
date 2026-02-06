@@ -11,6 +11,9 @@ import { PDFDocument } from 'pdf-lib';
 import sharp from 'sharp';
 import * as fs from 'fs';
 import * as path from 'path';
+import { z } from 'zod';
+import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
 
 // ============================================================================
 // Step 1: PDF Text Extraction
@@ -605,4 +608,438 @@ export function validateChunks(
     valid: issues.length === 0,
     issues,
   };
+}
+
+// ============================================================================
+// Step 4: LLM Structured Output Schema
+// ============================================================================
+
+/**
+ * Zod schema for parsed question validation
+ */
+export const QuestionSchema = z.object({
+  number: z.number().int().positive(),
+  part: z.string().nullable(),
+  text: z.string().min(5),
+  type: z.enum(['MCQ', 'Open-ended']),
+  options: z.array(z.string()),
+  correctAnswer: z.string().min(1),
+  image: z.string().nullable(),
+});
+
+/**
+ * Zod schema for parsed exam validation
+ */
+export const ExamSchema = z.object({
+  subject: z.enum(['Mathematics', 'English', 'Chinese', 'Science']),
+  name: z.string().min(3),
+  estimatedGrade: z.string(),
+  questions: z.array(QuestionSchema).min(1),
+});
+
+/**
+ * TypeScript interfaces for parsed data
+ */
+export interface ParsedQuestion {
+  number: number;
+  part: string | null;
+  text: string;
+  type: 'MCQ' | 'Open-ended';
+  options: string[];
+  correctAnswer: string;
+  image: string | null;
+}
+
+export interface ParsedExam {
+  subject: 'Mathematics' | 'English' | 'Chinese' | 'Science';
+  name: string;
+  estimatedGrade: string;
+  questions: ParsedQuestion[];
+}
+
+/**
+ * Metadata accumulated across chunks
+ */
+export interface ExamMetadata {
+  totalQuestions: number;
+  mcqCount: number;
+  openEndedCount: number;
+}
+
+// ============================================================================
+// Step 5: LLM Prompt Engineering
+// ============================================================================
+
+/**
+ * System prompt for LLM exam parser
+ */
+export const SYSTEM_PROMPT = `You are an expert exam paper parser. Your task is to extract structured question data from exam papers.
+
+CRITICAL RULES:
+1. Extract questions sequentially from top to bottom
+2. Preserve exact question numbering (e.g., 1, 2, 3A, 3B, 4)
+3. Identify question types: "MCQ" (multiple choice) or "Open-ended"
+4. For MCQ: extract ALL options (typically A, B, C, D) and the correct answer
+5. For Open-ended: extract the model answer if provided
+6. Preserve formatting of mathematical expressions, formulas, and special characters
+7. If a question has multiple parts (A, B, C), treat each as a separate question with the same number
+8. If you see "[IMAGE]" or "[DIAGRAM]", note it in the image field
+9. Extract the EXACT text of questions and answers - do not paraphrase or summarize
+
+SUBJECTS: Mathematics, English, Chinese (Simplified Mandarin), Science
+
+IMPORTANT: Return ONLY valid JSON matching the exact schema. No additional text or explanation.`;
+
+/**
+ * Create user prompt for a specific chunk
+ * @param chunkContent - Preprocessed text content
+ * @param chunkIndex - Current chunk number (0-based)
+ * @param totalChunks - Total number of chunks
+ * @returns Formatted prompt string
+ */
+export function createUserPrompt(
+  chunkContent: string,
+  chunkIndex: number,
+  totalChunks: number
+): string {
+  return `Parse the following exam paper content (chunk ${chunkIndex + 1} of ${totalChunks}):
+
+--- EXAM CONTENT START ---
+${chunkContent}
+--- EXAM CONTENT END ---
+
+Extract all questions with their answers. Return a JSON object with this structure:
+{
+  "subject": "Mathematics | English | Chinese | Science",
+  "name": "Descriptive exam name (e.g., '2024 P4 Mathematics Midterm')",
+  "estimatedGrade": "P4 | P5 | P6 | S1 | S2 | etc.",
+  "questions": [
+    {
+      "number": 1,
+      "part": null,
+      "text": "Full question text",
+      "type": "MCQ",
+      "options": ["Option A text", "Option B text", "Option C text", "Option D text"],
+      "correctAnswer": "Option B text",
+      "image": null
+    },
+    {
+      "number": 2,
+      "part": "A",
+      "text": "Question 2A text",
+      "type": "Open-ended",
+      "options": [],
+      "correctAnswer": "Detailed model answer",
+      "image": "[DIAGRAM PRESENT]"
+    }
+  ]
+}
+
+IMPORTANT:
+- If this is chunk ${chunkIndex + 1} of ${totalChunks}, only extract questions visible in this chunk
+- Maintain exact question numbering and parts
+- Extract word-for-word question text and answers
+- Set "part" to null for questions without sub-parts
+- For MCQ, the correctAnswer must be the EXACT text from the options array
+- Return ONLY the JSON object, no additional text`;
+}
+
+// ============================================================================
+// Step 6: OpenAI GPT-4 Integration
+// ============================================================================
+
+/**
+ * Initialize OpenAI client (lazy initialization)
+ */
+let openaiClient: OpenAI | null = null;
+
+function getOpenAIClient(): OpenAI {
+  if (!openaiClient) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new Error('OPENAI_API_KEY environment variable is not set');
+    }
+    openaiClient = new OpenAI({ apiKey });
+  }
+  return openaiClient;
+}
+
+/**
+ * Parse exam chunk using OpenAI GPT-4o
+ * @param chunkContent - Preprocessed text content
+ * @param chunkIndex - Current chunk number (0-based)
+ * @param totalChunks - Total number of chunks
+ * @returns Parsed exam data
+ */
+export async function parseWithGPT4(
+  chunkContent: string,
+  chunkIndex: number,
+  totalChunks: number
+): Promise<ParsedExam> {
+  const openai = getOpenAIClient();
+  
+  console.log(`🤖 Parsing chunk ${chunkIndex + 1}/${totalChunks} with GPT-4o...`);
+  
+  try {
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-2024-08-06', // Supports structured outputs
+      messages: [
+        {
+          role: 'system',
+          content: SYSTEM_PROMPT,
+        },
+        {
+          role: 'user',
+          content: createUserPrompt(chunkContent, chunkIndex, totalChunks),
+        },
+      ],
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'exam_parser',
+          strict: true,
+          schema: {
+            type: 'object',
+            properties: {
+              subject: {
+                type: 'string',
+                enum: ['Mathematics', 'English', 'Chinese', 'Science'],
+              },
+              name: { type: 'string' },
+              estimatedGrade: { type: 'string' },
+              questions: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    number: { type: 'integer' },
+                    part: { type: ['string', 'null'] },
+                    text: { type: 'string' },
+                    type: { type: 'string', enum: ['MCQ', 'Open-ended'] },
+                    options: {
+                      type: 'array',
+                      items: { type: 'string' },
+                    },
+                    correctAnswer: { type: 'string' },
+                    image: { type: ['string', 'null'] },
+                  },
+                  required: ['number', 'part', 'text', 'type', 'options', 'correctAnswer', 'image'],
+                  additionalProperties: false,
+                },
+              },
+            },
+            required: ['subject', 'name', 'estimatedGrade', 'questions'],
+            additionalProperties: false,
+          },
+        },
+      },
+      temperature: 0.1, // Low temperature for consistency
+    });
+
+    const content = completion.choices[0].message.content;
+    if (!content) {
+      throw new Error('No response from GPT-4o');
+    }
+
+    const parsed = JSON.parse(content) as ParsedExam;
+    console.log(`  ✅ Extracted ${parsed.questions.length} questions`);
+    
+    return parsed;
+  } catch (error) {
+    console.error(`❌ GPT-4o parsing failed for chunk ${chunkIndex + 1}:`, error);
+    throw error;
+  }
+}
+
+// ============================================================================
+// Step 7: Anthropic Claude Integration
+// ============================================================================
+
+/**
+ * Initialize Anthropic client (lazy initialization)
+ */
+let anthropicClient: Anthropic | null = null;
+
+function getAnthropicClient(): Anthropic {
+  if (!anthropicClient) {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      throw new Error('ANTHROPIC_API_KEY environment variable is not set');
+    }
+    anthropicClient = new Anthropic({ apiKey });
+  }
+  return anthropicClient;
+}
+
+/**
+ * Parse exam chunk using Anthropic Claude
+ * @param chunkContent - Preprocessed text content
+ * @param chunkIndex - Current chunk number (0-based)
+ * @param totalChunks - Total number of chunks
+ * @returns Parsed exam data
+ */
+export async function parseWithClaude(
+  chunkContent: string,
+  chunkIndex: number,
+  totalChunks: number
+): Promise<ParsedExam> {
+  const anthropic = getAnthropicClient();
+  
+  console.log(`🤖 Parsing chunk ${chunkIndex + 1}/${totalChunks} with Claude...`);
+  
+  try {
+    const message = await anthropic.messages.create({
+      model: 'claude-3-5-sonnet-20241022',
+      max_tokens: 8000,
+      system: SYSTEM_PROMPT,
+      messages: [
+        {
+          role: 'user',
+          content: createUserPrompt(chunkContent, chunkIndex, totalChunks),
+        },
+      ],
+    });
+
+    const content = message.content[0];
+    if (content.type !== 'text') {
+      throw new Error('Unexpected response type from Claude');
+    }
+
+    // Extract JSON from response (Claude may add explanation text)
+    const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('No JSON found in Claude response');
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]) as ParsedExam;
+    console.log(`  ✅ Extracted ${parsed.questions.length} questions`);
+    
+    return parsed;
+  } catch (error) {
+    console.error(`❌ Claude parsing failed for chunk ${chunkIndex + 1}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Parse exam chunk using the configured LLM provider
+ * @param chunkContent - Preprocessed text content
+ * @param chunkIndex - Current chunk number (0-based)
+ * @param totalChunks - Total number of chunks
+ * @param provider - LLM provider to use ('openai' or 'anthropic')
+ * @returns Parsed exam data
+ */
+export async function parseChunkWithLLM(
+  chunkContent: string,
+  chunkIndex: number,
+  totalChunks: number,
+  provider: 'openai' | 'anthropic' = 'openai'
+): Promise<ParsedExam> {
+  if (provider === 'openai') {
+    return parseWithGPT4(chunkContent, chunkIndex, totalChunks);
+  } else {
+    return parseWithClaude(chunkContent, chunkIndex, totalChunks);
+  }
+}
+
+/**
+ * Validate parsed exam data with Zod schema and business logic
+ * @param data - Parsed exam data to validate
+ * @returns Validated exam data
+ */
+export function validateParsedExam(data: unknown): ParsedExam {
+  try {
+    const validated = ExamSchema.parse(data);
+    
+    // Additional business logic validation
+    validated.questions.forEach((q, index) => {
+      // MCQ must have at least 2 options
+      if (q.type === 'MCQ' && q.options.length < 2) {
+        throw new Error(`Question ${q.number}${q.part || ''} is MCQ but has less than 2 options`);
+      }
+      
+      // For MCQ, correct answer should match one of the options
+      if (q.type === 'MCQ' && q.options.length > 0) {
+        const exactMatch = q.options.includes(q.correctAnswer);
+        
+        if (!exactMatch) {
+          console.warn(`⚠️  Question ${q.number}${q.part || ''}: Correct answer not exactly in options. Attempting fuzzy match...`);
+          
+          // Attempt fuzzy matching (case-insensitive, partial match)
+          const match = q.options.find(opt => {
+            const optLower = opt.toLowerCase().trim();
+            const ansLower = q.correctAnswer.toLowerCase().trim();
+            return optLower.includes(ansLower) || ansLower.includes(optLower);
+          });
+          
+          if (match) {
+            console.warn(`  ✅ Fuzzy matched "${q.correctAnswer}" to "${match}"`);
+            q.correctAnswer = match;
+          } else {
+            console.warn(`  ⚠️  No match found, keeping original answer: "${q.correctAnswer}"`);
+          }
+        }
+      }
+      
+      // Validate question numbering
+      if (q.number < 1 || q.number > 999) {
+        throw new Error(`Question ${q.number}${q.part || ''} has invalid number`);
+      }
+      
+      // Validate part format (should be single letter A-Z or null)
+      if (q.part !== null && !/^[A-Z]$/.test(q.part)) {
+        console.warn(`⚠️  Question ${q.number}${q.part}: Part should be single letter A-Z, got "${q.part}"`);
+      }
+    });
+    
+    return validated as ParsedExam;
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      const zodError = error as z.ZodError<any>;
+      console.error('❌ Validation errors:', zodError.issues);
+      throw new Error(`Invalid exam data: ${zodError.issues.map((e: any) => `${e.path.join('.')}: ${e.message}`).join(', ')}`);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Parse chunk with retry logic and validation
+ * @param chunkContent - Preprocessed text content
+ * @param chunkIndex - Current chunk number (0-based)
+ * @param totalChunks - Total number of chunks
+ * @param provider - LLM provider to use
+ * @param maxRetries - Maximum number of retry attempts
+ * @returns Validated parsed exam data
+ */
+export async function parseChunkWithRetry(
+  chunkContent: string,
+  chunkIndex: number,
+  totalChunks: number,
+  provider: 'openai' | 'anthropic' = 'openai',
+  maxRetries: number = 3
+): Promise<ParsedExam> {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      if (attempt > 0) {
+        console.log(`  🔄 Retry attempt ${attempt + 1}/${maxRetries}...`);
+        // Exponential backoff
+        await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+      }
+      
+      const parsed = await parseChunkWithLLM(chunkContent, chunkIndex, totalChunks, provider);
+      const validated = validateParsedExam(parsed);
+      
+      console.log(`  ✅ Chunk ${chunkIndex + 1} validated successfully`);
+      return validated;
+      
+    } catch (error) {
+      lastError = error as Error;
+      console.error(`  ❌ Attempt ${attempt + 1} failed:`, error instanceof Error ? error.message : error);
+    }
+  }
+  
+  throw new Error(`Failed to parse chunk ${chunkIndex + 1} after ${maxRetries} attempts: ${lastError?.message}`);
 }

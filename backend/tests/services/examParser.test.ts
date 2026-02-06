@@ -7,6 +7,11 @@ import {
   chunkExamPaper,
   validateChunks,
   ExamChunk,
+  createUserPrompt,
+  validateParsedExam,
+  QuestionSchema,
+  ExamSchema,
+  SYSTEM_PROMPT,
 } from '../../src/services/examParser';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -555,4 +560,421 @@ describe('Exam Parser - Step 1 & 2: Extraction and Preprocessing', () => {
       expect(result.issues).toHaveLength(0);
     });
   });
-});
+
+  // ============================================================================
+  // Step 4: LLM Schema Validation Tests
+  // ============================================================================
+  
+  describe('QuestionSchema', () => {
+    it('should validate a valid MCQ question', () => {
+      const validMCQ = {
+        number: 1,
+        part: null,
+        text: 'What is 2+2?',
+        type: 'MCQ',
+        options: ['2', '3', '4', '5'],
+        correctAnswer: '4',
+        image: null,
+      };
+      
+      const result = QuestionSchema.safeParse(validMCQ);
+      expect(result.success).toBe(true);
+    });
+
+    it('should validate a valid open-ended question with part', () => {
+      const validOpenEnded = {
+        number: 3,
+        part: 'A',
+        text: 'Explain the process of photosynthesis.',
+        type: 'Open-ended',
+        options: [],
+        correctAnswer: 'Photosynthesis is the process by which plants...',
+        image: '[DIAGRAM PRESENT]',
+      };
+      
+      const result = QuestionSchema.safeParse(validOpenEnded);
+      expect(result.success).toBe(true);
+    });
+
+    it('should reject question with invalid type', () => {
+      const invalid = {
+        number: 1,
+        part: null,
+        text: 'Question text',
+        type: 'Invalid',
+        options: [],
+        correctAnswer: 'Answer',
+        image: null,
+      };
+      
+      const result = QuestionSchema.safeParse(invalid);
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject question with negative number', () => {
+      const invalid = {
+        number: -1,
+        part: null,
+        text: 'Question text',
+        type: 'MCQ',
+        options: ['A', 'B'],
+        correctAnswer: 'A',
+        image: null,
+      };
+      
+      const result = QuestionSchema.safeParse(invalid);
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject question with text too short', () => {
+      const invalid = {
+        number: 1,
+        part: null,
+        text: 'Q1',
+        type: 'MCQ',
+        options: ['A', 'B'],
+        correctAnswer: 'A',
+        image: null,
+      };
+      
+      const result = QuestionSchema.safeParse(invalid);
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe('ExamSchema', () => {
+    it('should validate a complete exam', () => {
+      const validExam = {
+        subject: 'Mathematics',
+        name: '2024 P4 Mathematics Midterm',
+        estimatedGrade: 'P4',
+        questions: [
+          {
+            number: 1,
+            part: null,
+            text: 'What is 2+2?',
+            type: 'MCQ',
+            options: ['2', '3', '4', '5'],
+            correctAnswer: '4',
+            image: null,
+          },
+        ],
+      };
+      
+      const result = ExamSchema.safeParse(validExam);
+      expect(result.success).toBe(true);
+    });
+
+    it('should reject exam with invalid subject', () => {
+      const invalid = {
+        subject: 'History',
+        name: 'Test',
+        estimatedGrade: 'P4',
+        questions: [
+          {
+            number: 1,
+            part: null,
+            text: 'Question text',
+            type: 'MCQ',
+            options: ['A', 'B'],
+            correctAnswer: 'A',
+            image: null,
+          },
+        ],
+      };
+      
+      const result = ExamSchema.safeParse(invalid);
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject exam with empty questions array', () => {
+      const invalid = {
+        subject: 'Mathematics',
+        name: 'Test',
+        estimatedGrade: 'P4',
+        questions: [],
+      };
+      
+      const result = ExamSchema.safeParse(invalid);
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject exam with short name', () => {
+      const invalid = {
+        subject: 'Mathematics',
+        name: 'T',
+        estimatedGrade: 'P4',
+        questions: [
+          {
+            number: 1,
+            part: null,
+            text: 'Question text',
+            type: 'MCQ',
+            options: ['A', 'B'],
+            correctAnswer: 'A',
+            image: null,
+          },
+        ],
+      };
+      
+      const result = ExamSchema.safeParse(invalid);
+      expect(result.success).toBe(false);
+    });
+  });
+
+  // ============================================================================
+  // Step 5: Prompt Engineering Tests
+  // ============================================================================
+  
+  describe('SYSTEM_PROMPT', () => {
+    it('should contain critical parsing rules', () => {
+      expect(SYSTEM_PROMPT).toContain('extract');
+      expect(SYSTEM_PROMPT).toContain('MCQ');
+      expect(SYSTEM_PROMPT).toContain('Open-ended');
+      expect(SYSTEM_PROMPT).toContain('JSON');
+    });
+
+    it('should specify supported subjects', () => {
+      expect(SYSTEM_PROMPT).toContain('Mathematics');
+      expect(SYSTEM_PROMPT).toContain('English');
+      expect(SYSTEM_PROMPT).toContain('Chinese');
+      expect(SYSTEM_PROMPT).toContain('Science');
+    });
+
+    it('should mention preserving exact text', () => {
+      expect(SYSTEM_PROMPT.toLowerCase()).toContain('exact');
+    });
+  });
+
+  describe('createUserPrompt', () => {
+    it('should create prompt for first chunk', () => {
+      const content = 'Q1. Sample question';
+      const prompt = createUserPrompt(content, 0, 3);
+      
+      expect(prompt).toContain('chunk 1 of 3');
+      expect(prompt).toContain(content);
+      expect(prompt).toContain('EXAM CONTENT START');
+      expect(prompt).toContain('EXAM CONTENT END');
+    });
+
+    it('should create prompt for middle chunk', () => {
+      const content = 'Q5. Middle question';
+      const prompt = createUserPrompt(content, 1, 3);
+      
+      expect(prompt).toContain('chunk 2 of 3');
+      expect(prompt).toContain(content);
+    });
+
+    it('should create prompt for last chunk', () => {
+      const content = 'Q10. Last question';
+      const prompt = createUserPrompt(content, 2, 3);
+      
+      expect(prompt).toContain('chunk 3 of 3');
+      expect(prompt).toContain(content);
+    });
+
+    it('should include JSON schema in prompt', () => {
+      const prompt = createUserPrompt('Q1. Test', 0, 1);
+      
+      expect(prompt).toContain('"subject"');
+      expect(prompt).toContain('"questions"');
+      expect(prompt).toContain('"number"');
+      expect(prompt).toContain('"type"');
+    });
+
+    it('should include instructions for chunk-specific extraction', () => {
+      const prompt = createUserPrompt('Q1. Test', 1, 5);
+      
+      expect(prompt).toContain('chunk 2');
+      expect(prompt).toContain('only extract questions visible in this chunk');
+    });
+
+    it('should specify MCQ answer matching requirement', () => {
+      const prompt = createUserPrompt('Q1. Test', 0, 1);
+      
+      expect(prompt).toContain('correctAnswer');
+      expect(prompt).toContain('options');
+    });
+  });
+
+  // ============================================================================
+  // Step 6-7: Validation Tests
+  // ============================================================================
+  
+  describe('validateParsedExam', () => {
+    it('should validate a correct exam', () => {
+      const exam = {
+        subject: 'Mathematics',
+        name: '2024 P4 Math Test',
+        estimatedGrade: 'P4',
+        questions: [
+          {
+            number: 1,
+            part: null,
+            text: 'What is 2+2?',
+            type: 'MCQ',
+            options: ['2', '3', '4', '5'],
+            correctAnswer: '4',
+            image: null,
+          },
+        ],
+      };
+      
+      const result = validateParsedExam(exam);
+      expect(result.subject).toBe('Mathematics');
+      expect(result.questions.length).toBe(1);
+    });
+
+    it('should throw error for MCQ with less than 2 options', () => {
+      const exam = {
+        subject: 'Mathematics',
+        name: 'Test',
+        estimatedGrade: 'P4',
+        questions: [
+          {
+            number: 1,
+            part: null,
+            text: 'Question',
+            type: 'MCQ',
+            options: ['Only one'],
+            correctAnswer: 'Only one',
+            image: null,
+          },
+        ],
+      };
+      
+      expect(() => validateParsedExam(exam)).toThrow('less than 2 options');
+    });
+
+    it('should fuzzy match correct answer to options', () => {
+      const exam = {
+        subject: 'Mathematics',
+        name: 'Test',
+        estimatedGrade: 'P4',
+        questions: [
+          {
+            number: 1,
+            part: null,
+            text: 'Question',
+            type: 'MCQ',
+            options: ['Option A: 2', 'Option B: 3', 'Option C: 4'],
+            correctAnswer: '4',
+            image: null,
+          },
+        ],
+      };
+      
+      const result = validateParsedExam(exam);
+      expect(result.questions[0].correctAnswer).toBe('Option C: 4');
+    });
+
+    it('should handle questions with parts', () => {
+      const exam = {
+        subject: 'English',
+        name: 'Test',
+        estimatedGrade: 'P5',
+        questions: [
+          {
+            number: 3,
+            part: 'A',
+            text: 'Part A question',
+            type: 'Open-ended',
+            options: [],
+            correctAnswer: 'Answer A',
+            image: null,
+          },
+          {
+            number: 3,
+            part: 'B',
+            text: 'Part B question',
+            type: 'Open-ended',
+            options: [],
+            correctAnswer: 'Answer B',
+            image: null,
+          },
+        ],
+      };
+      
+      const result = validateParsedExam(exam);
+      expect(result.questions.length).toBe(2);
+      expect(result.questions[0].part).toBe('A');
+      expect(result.questions[1].part).toBe('B');
+    });
+
+    it('should throw error for invalid question number', () => {
+      const exam = {
+        subject: 'Mathematics',
+        name: 'Test',
+        estimatedGrade: 'P4',
+        questions: [
+          {
+            number: 0,
+            part: null,
+            text: 'Question',
+            type: 'MCQ',
+            options: ['A', 'B'],
+            correctAnswer: 'A',
+            image: null,
+          },
+        ],
+      };
+      
+      expect(() => validateParsedExam(exam)).toThrow();
+    });
+
+    it('should validate open-ended questions', () => {
+      const exam = {
+        subject: 'Science',
+        name: 'Test',
+        estimatedGrade: 'S1',
+        questions: [
+          {
+            number: 1,
+            part: null,
+            text: 'Explain photosynthesis',
+            type: 'Open-ended',
+            options: [],
+            correctAnswer: 'Photosynthesis is the process...',
+            image: null,
+          },
+        ],
+      };
+      
+      const result = validateParsedExam(exam);
+      expect(result.questions[0].type).toBe('Open-ended');
+      expect(result.questions[0].options.length).toBe(0);
+    });
+
+    it('should handle questions with images', () => {
+      const exam = {
+        subject: 'Mathematics',
+        name: 'Test',
+        estimatedGrade: 'P6',
+        questions: [
+          {
+            number: 1,
+            part: null,
+            text: 'Based on the diagram, calculate the area.',
+            type: 'Open-ended',
+            options: [],
+            correctAnswer: '25 cm²',
+            image: '[DIAGRAM PRESENT]',
+          },
+        ],
+      };
+      
+      const result = validateParsedExam(exam);
+      expect(result.questions[0].image).toBe('[DIAGRAM PRESENT]');
+    });
+
+    it('should throw error for invalid Zod schema', () => {
+      const invalid = {
+        subject: 'Invalid Subject',
+        name: 'Test',
+        estimatedGrade: 'P4',
+        questions: [],
+      };
+      
+      expect(() => validateParsedExam(invalid)).toThrow('Invalid exam data');
+    });
+  });});
