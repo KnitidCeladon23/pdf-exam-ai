@@ -12,6 +12,8 @@
     "test:coverage": "jest --coverage"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^3.0.25",
+    "ai": "^6.0.73",
     "dotenv": "^17.2.3",
     "next": "16.1.6",
     "pdf-parse": "^2.4.5",
