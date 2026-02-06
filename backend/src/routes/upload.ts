@@ -49,8 +49,8 @@ router.post('/', upload.array('files', 10), async (req: Request, res: Response) 
     const customNames = req.body.customNames;
     const customNamesArray = Array.isArray(customNames) ? customNames : [customNames].filter(Boolean);
 
-    // Create exam records for each uploaded file
-    const exams = await Promise.all(
+    // Create exam records for each uploaded file (without parsing)
+    const results = await Promise.all(
       files.map(async (file, index) => {
         // Get filename without extension
         const filenameWithoutExt = path.parse(file.originalname).name;
@@ -58,19 +58,23 @@ router.post('/', upload.array('files', 10), async (req: Request, res: Response) 
         // Use custom name if provided, otherwise use filename without extension
         const displayName = customNamesArray[index] || filenameWithoutExt;
         
+        // Create exam record without parsing
+        const fileUrl = `/uploads/${file.filename}`;
         const exam = await prisma.exam.create({
           data: {
-            url: `/uploads/${file.filename}`,
+            url: fileUrl,
             name: displayName,
-            subject: 'Unknown', // Can be updated later or extracted from PDF
+            subject: 'Unknown', // Will be updated when parsed
+            parsed: false,
           }
         });
         
         return {
           id: exam.id,
           filename: displayName,
-          path: exam.url,
+          path: fileUrl,
           size: file.size,
+          parsed: false,
         };
       })
     );
@@ -78,7 +82,7 @@ router.post('/', upload.array('files', 10), async (req: Request, res: Response) 
     res.json({
       success: true,
       message: `${files.length} file(s) uploaded successfully`,
-      exams,
+      exams: results,
     });
   } catch (error) {
     console.error('Upload error:', error);

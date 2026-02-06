@@ -22,18 +22,28 @@ describe('Upload Routes', () => {
   });
 
   describe('POST /api/upload', () => {
-    // Skip file upload tests as they require complex multer mocking
-    it.skip('should upload a PDF file', async () => {
-      // Multer file upload tests require more complex setup
-      // This would be better tested in integration tests
-    });
-
     it('should return 400 if no files uploaded', async () => {
       const response = await request(app)
         .post('/api/upload')
         .expect(400);
 
       expect(response.body).toHaveProperty('error', 'No files uploaded');
+    });
+
+    // Skip file upload tests as they require complex multer mocking
+    it.skip('should upload a PDF file without parsing', async () => {
+      // Mock Prisma to create exam record
+      (prisma.exam.create as jest.Mock).mockResolvedValue({
+        id: 1,
+        name: 'Test Exam',
+        url: '/uploads/test.pdf',
+        subject: 'Unknown',
+        parsed: false,
+      });
+
+      // This test requires multer mocking which is complex
+      // Would be better tested in integration tests with actual files
+      // Expected behavior: File uploaded, exam created, parsed=false
     });
 
     it.skip('should handle multiple file uploads', async () => {

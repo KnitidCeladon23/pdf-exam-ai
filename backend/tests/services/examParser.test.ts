@@ -12,6 +12,7 @@ import {
   QuestionSchema,
   ExamSchema,
   SYSTEM_PROMPT,
+  generateAIAnswer,
 } from '../../src/services/examParser';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -687,16 +688,16 @@ describe('Exam Parser - Step 1 & 2: Extraction and Preprocessing', () => {
       expect(result.success).toBe(false);
     });
 
-    it('should reject exam with empty questions array', () => {
-      const invalid = {
+    it('should accept exam with empty questions array (for extraction failures)', () => {
+      const valid = {
         subject: 'Mathematics',
         name: 'Test',
         estimatedGrade: 'P4',
         questions: [],
       };
       
-      const result = ExamSchema.safeParse(invalid);
-      expect(result.success).toBe(false);
+      const result = ExamSchema.safeParse(valid);
+      expect(result.success).toBe(true);
     });
 
     it('should reject exam with short name', () => {
@@ -743,6 +744,51 @@ describe('Exam Parser - Step 1 & 2: Extraction and Preprocessing', () => {
 
     it('should mention preserving exact text', () => {
       expect(SYSTEM_PROMPT.toLowerCase()).toContain('exact');
+    });
+
+    it('should contain grade level awareness', () => {
+      expect(SYSTEM_PROMPT).toContain('PRIMARY');
+      expect(SYSTEM_PROMPT).toContain('HIGH SCHOOL');
+      expect(SYSTEM_PROMPT).toContain('P1-P6');
+      expect(SYSTEM_PROMPT).toContain('S1-S4');
+      expect(SYSTEM_PROMPT).toContain('Primary papers');
+      expect(SYSTEM_PROMPT).toContain('Secondary papers');
+    });
+
+    it('should contain subject-specific attention for Math', () => {
+      expect(SYSTEM_PROMPT).toContain('Fractions');
+      expect(SYSTEM_PROMPT).toContain('Mathematical symbols');
+      expect(SYSTEM_PROMPT).toContain('Equations');
+      expect(SYSTEM_PROMPT).toContain('algebraic');
+    });
+
+    it('should contain subject-specific attention for Chinese', () => {
+      expect(SYSTEM_PROMPT).toContain('Simplified Chinese');
+      expect(SYSTEM_PROMPT).toContain('简体字');
+      expect(SYSTEM_PROMPT).toContain('Pinyin');
+      expect(SYSTEM_PROMPT).toContain('stroke order');
+    });
+
+    it('should contain subject-specific attention for English', () => {
+      expect(SYSTEM_PROMPT).toContain('Grammar');
+      expect(SYSTEM_PROMPT).toContain('tenses');
+      expect(SYSTEM_PROMPT).toContain('Vocabulary');
+      expect(SYSTEM_PROMPT).toContain('Comprehension');
+    });
+
+    it('should contain subject-specific attention for Science', () => {
+      expect(SYSTEM_PROMPT).toContain('Diagrams of plants');
+      expect(SYSTEM_PROMPT).toContain('Scientific apparatus');
+      expect(SYSTEM_PROMPT).toContain('experiments');
+      expect(SYSTEM_PROMPT).toContain('Technical terminology');
+    });
+
+    it('should contain diagram/image recognition guidance', () => {
+      expect(SYSTEM_PROMPT).toContain('IMAGE');
+      expect(SYSTEM_PROMPT).toContain('DIAGRAM');
+      expect(SYSTEM_PROMPT).toContain('VISUAL ELEMENT');
+      expect(SYSTEM_PROMPT).toContain('diagrams');
+      expect(SYSTEM_PROMPT).toContain('illustrations');
     });
   });
 
@@ -977,4 +1023,61 @@ describe('Exam Parser - Step 1 & 2: Extraction and Preprocessing', () => {
       
       expect(() => validateParsedExam(invalid)).toThrow('Invalid exam data');
     });
-  });});
+  });
+
+});
+
+// ============================================================================
+// AI Answer Generation Tests
+// ============================================================================
+
+describe('AI Answer Generation', () => {
+  
+  describe('generateAIAnswer', () => {
+    // Skip these tests in CI since they require OpenAI API
+    const shouldSkipAITests = process.env.CI === 'true' || !process.env.AI_GATEWAY_API_KEY;
+    
+    it('should generate answer for open-ended questions', async () => {
+      if (shouldSkipAITests) {
+        console.log('Skipping AI test - no API key available');
+        return;
+      }
+      
+      const question = "What is 2 + 2?";
+      const answer = await generateAIAnswer(question, 'Open-ended');
+      
+      expect(answer).toBeTruthy();
+      expect(typeof answer).toBe('string');
+      expect(answer.length).toBeGreaterThan(1);
+    }, 15000); // Extended timeout for API calls
+
+    it('should generate answer for MCQ questions', async () => {
+      if (shouldSkipAITests) {
+        console.log('Skipping AI test - no API key available');
+        return;
+      }
+      
+      const question = "What is the capital of France?";
+      const options = ["London", "Berlin", "Paris", "Madrid"];
+      const answer = await generateAIAnswer(question, 'MCQ', options);
+      
+      expect(answer).toBeTruthy();
+      expect(typeof answer).toBe('string');
+      expect(answer.length).toBeGreaterThan(1);
+    }, 15000);
+
+    it('should handle empty options for MCQ gracefully', async () => {
+      if (shouldSkipAITests) {
+        console.log('Skipping AI test - no API key available');
+        return;
+      }
+      
+      const question = "What is 5 × 3?";
+      const answer = await generateAIAnswer(question, 'MCQ', []);
+      
+      expect(answer).toBeTruthy();
+      expect(typeof answer).toBe('string');
+    }, 15000);
+  });
+
+});
