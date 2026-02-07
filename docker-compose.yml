@@ -70,6 +70,8 @@ services:
     environment:
       NODE_ENV: production
       NEXT_PUBLIC_API_URL: ${PUBLIC_URL:-http://localhost:3001}
+      AI_GATEWAY_API_KEY: ${AI_GATEWAY_API_KEY}
+      BACKEND_URL: http://backend:3001
     ports:
       - "3000:3000"
     networks:
