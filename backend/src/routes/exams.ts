@@ -3,8 +3,13 @@ import { prisma } from '../lib/prisma';
 import { parseExamPDF } from '../services/examParser';
 import fs from 'fs';
 import path from 'path';
+import { EventEmitter } from 'events';
 
 const router = Router();
+
+// Track currently parsing exams to prevent concurrent parsing
+// Key: examId, Value: EventEmitter for broadcasting progress
+const currentlyParsing = new Map<number, EventEmitter>();
 
 // Get all exams
 router.get('/', async (req: Request, res: Response) => {
@@ -113,6 +118,7 @@ router.post('/:id/parse', async (req: Request, res: Response) => {
 });
 
 // Parse exam PDF with Server-Sent Events for progress updates
+// Supports multiple concurrent clients watching the same parsing session
 router.get('/:id/parse/stream', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -135,13 +141,105 @@ router.get('/:id/parse/stream', async (req: Request, res: Response) => {
       });
     }
 
+    // Set up SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // Disable buffering in nginx
+    
+    // Check if this exam is already being parsed by another user
+    let progressEmitter = currentlyParsing.get(examId);
+    
+    if (progressEmitter) {
+      // Another user is already parsing this exam - join their session
+      console.log(`👥 User joining existing parsing session for exam ${examId}`);
+      
+      // Send initial connection message
+      res.write(`data: ${JSON.stringify({ type: 'start', message: 'Joining existing parsing session...' })}\n\n`);
+      
+      // Listen to progress events from the existing parsing session
+      const onProgress = (data: any) => {
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+      
+      const onComplete = (data: any) => {
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+        res.end();
+        cleanup();
+      };
+      
+      const onError = (data: any) => {
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+        res.end();
+        cleanup();
+      };
+      
+      const cleanup = () => {
+        progressEmitter?.removeListener('progress', onProgress);
+        progressEmitter?.removeListener('complete', onComplete);
+        progressEmitter?.removeListener('error', onError);
+      };
+      
+      progressEmitter.on('progress', onProgress);
+      progressEmitter.on('complete', onComplete);
+      progressEmitter.on('error', onError);
+      
+      // Clean up when client disconnects
+      req.on('close', cleanup);
+      
+      return; // Don't start a new parsing process
+    }
+    
+    // No one is parsing this exam yet - start a new parsing session
+    console.log(`\n📄 Starting new parsing session for exam ${examId}: ${exam.name}`);
+    
+    // Create EventEmitter for this parsing session
+    progressEmitter = new EventEmitter();
+    currentlyParsing.set(examId, progressEmitter);
+    
+    // Send initial connection message
+    res.write(`data: ${JSON.stringify({ type: 'start', message: 'Starting parse...' })}\n\n`);
+    
+    // Listen to progress events
+    const onProgress = (data: any) => {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+    
+    const onComplete = (data: any) => {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+      res.end();
+      cleanup();
+    };
+    
+    const onError = (data: any) => {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+      res.end();
+      cleanup();
+    };
+    
+    const cleanup = () => {
+      progressEmitter?.removeListener('progress', onProgress);
+      progressEmitter?.removeListener('complete', onComplete);
+      progressEmitter?.removeListener('error', onError);
+    };
+    
+    progressEmitter.on('progress', onProgress);
+    progressEmitter.on('complete', onComplete);
+    progressEmitter.on('error', onError);
+    
+    // Clean up when client disconnects
+    req.on('close', cleanup);
+    
     // Read PDF file
     const uploadsDir = path.join(__dirname, '../../uploads');
     const filename = path.basename(exam.url);
     const filePath = path.join(uploadsDir, filename);
 
     if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'PDF file not found' });
+      const errorData = { type: 'error', message: 'PDF file not found' };
+      progressEmitter.emit('error', errorData);
+      currentlyParsing.delete(examId);
+      return;
     }
 
     const pdfBuffer = fs.readFileSync(filePath);
@@ -149,17 +247,8 @@ router.get('/:id/parse/stream', async (req: Request, res: Response) => {
     // Get provider from query params
     const provider = (req.query.provider as 'openai' | 'anthropic' | 'both') || 'both';
     
-    // Set up SSE headers
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no'); // Disable buffering in nginx
-    
-    // Send initial connection message
-    res.write(`data: ${JSON.stringify({ type: 'start', message: 'Starting parse...' })}\n\n`);
-    
-    // Parse PDF with progress callback
-    console.log(`\n📄 Parsing exam ${examId}: ${exam.name} (provider: ${provider}) with SSE`);
+    // Parse PDF with progress callback that broadcasts to all listeners
+    console.log(`📄 Parsing exam ${examId}: ${exam.name} (provider: ${provider}) with SSE`);
     
     try {
       const result = await parseExamPDF(
@@ -170,27 +259,36 @@ router.get('/:id/parse/stream', async (req: Request, res: Response) => {
         3, 
         examId,
         (progress: number, message: string) => {
-          // Send progress update via SSE
-          res.write(`data: ${JSON.stringify({ type: 'progress', progress, message })}\n\n`);
+          // Broadcast progress update to all connected clients
+          const progressData = { type: 'progress', progress, message };
+          progressEmitter?.emit('progress', progressData);
         }
       );
       
-      // Send completion message
-      res.write(`data: ${JSON.stringify({ 
+      // Broadcast completion message to all connected clients
+      const completeData = {
         type: 'complete', 
         examId: result.examId,
         metadata: result.metadata,
         processingTime: result.processingTime
-      })}\n\n`);
+      };
+      progressEmitter.emit('complete', completeData);
       
-      res.end();
+      // Remove from currently parsing map
+      currentlyParsing.delete(examId);
+      console.log(`✅ Parsing session completed for exam ${examId}`);
+      
     } catch (parseError) {
-      // Send error message
-      res.write(`data: ${JSON.stringify({ 
+      // Broadcast error message to all connected clients
+      const errorData = {
         type: 'error', 
         message: parseError instanceof Error ? parseError.message : 'Parse failed'
-      })}\n\n`);
-      res.end();
+      };
+      progressEmitter.emit('error', errorData);
+      
+      // Remove from currently parsing map
+      currentlyParsing.delete(examId);
+      console.error(`❌ Parsing session failed for exam ${examId}:`, parseError);
     }
     
   } catch (error) {
