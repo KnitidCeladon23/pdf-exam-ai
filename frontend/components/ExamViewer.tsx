@@ -361,12 +361,27 @@ export default function ExamViewer({ examId }: ExamViewerProps) {
       {/* Main Exam Content */}
       <div className="flex-1 max-w-4xl">
         <div className="mb-8">
-          <h1 className="text-3xl font-bold mb-2 text-black">{exam.name}</h1>
-          <div className="text-gray-600">
-            <span className="font-semibold">Subject:</span> {exam.subject}
-          </div>
-          <div className="text-gray-500 text-sm mt-1">
-            {exam.questions.length} question{exam.questions.length !== 1 ? 's' : ''}
+          <div className="flex items-start justify-between gap-4 mb-4">
+            <div className="flex-1">
+              <h1 className="text-3xl font-bold mb-2 text-black">{exam.name}</h1>
+              <div className="text-gray-600">
+                <span className="font-semibold">Subject:</span> {exam.subject}
+              </div>
+              <div className="text-gray-500 text-sm mt-1">
+                {exam.questions.length} question{exam.questions.length !== 1 ? 's' : ''}
+              </div>
+            </div>
+            <button
+              onClick={() => window.open(exam.url, '_blank')}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 font-medium whitespace-nowrap"
+              type="button"
+              aria-label="View PDF in new tab"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+              View PDF
+            </button>
           </div>
         </div>
 

@@ -757,5 +757,45 @@ describe('ExamViewer', () => {
       expect(screen.getByText('What is 2 + 2?')).toBeInTheDocument();
     });
   });
+
+  describe('View PDF Button', () => {
+    it('should render View PDF button', async () => {
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        json: async () => mockExamData,
+      });
+
+      render(<ExamViewer examId={1} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Sample Math Exam')).toBeInTheDocument();
+      });
+
+      const viewPdfButton = screen.getByRole('button', { name: /view pdf/i });
+      expect(viewPdfButton).toBeInTheDocument();
+    });
+
+    it('should open PDF in new tab when View PDF button is clicked', async () => {
+      // Mock window.open
+      const mockOpen = jest.fn();
+      global.window.open = mockOpen;
+
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        json: async () => mockExamData,
+      });
+
+      render(<ExamViewer examId={1} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Sample Math Exam')).toBeInTheDocument();
+      });
+
+      const viewPdfButton = screen.getByRole('button', { name: /view pdf/i });
+      fireEvent.click(viewPdfButton);
+
+      expect(mockOpen).toHaveBeenCalledWith('/uploads/sample-exam.pdf', '_blank');
+    });
+  });
 });
 
