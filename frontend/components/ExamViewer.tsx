@@ -67,6 +67,7 @@ export default function ExamViewer({ examId }: ExamViewerProps) {
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [showChat, setShowChat] = useState(true);
+  const [chatModel, setChatModel] = useState<'gpt' | 'claude'>('gpt');
 
   const toggleImage = (questionId: number) => {
     setShowImages(prev => {
@@ -108,6 +109,12 @@ export default function ExamViewer({ examId }: ExamViewerProps) {
           });
           setExam({ ...data, questions: sortedQuestions });
           setError(null);
+          
+          // Auto-parse if exam hasn't been parsed yet
+          if (!data.parsed) {
+            console.log('Exam not parsed, starting auto-parse...');
+            handleParseExam();
+          }
         }
       } catch (err: any) {
         console.error('Failed to load exam', err);
@@ -250,7 +257,8 @@ export default function ExamViewer({ examId }: ExamViewerProps) {
         body: JSON.stringify({
           message: userMessage,
           examContext: examContext,
-          conversationHistory: chatMessages.slice(-5) // Last 5 messages for context
+          conversationHistory: chatMessages.slice(-5), // Last 5 messages for context
+          model: chatModel, // Pass selected model
         })
       });
       
@@ -305,20 +313,21 @@ export default function ExamViewer({ examId }: ExamViewerProps) {
       <div className="max-w-4xl mx-auto p-8">
         <div className="mb-8">
           <h1 className="text-3xl font-bold mb-2 text-black">{exam.name}</h1>
-          <div className="text-gray-600">
-            <span className="font-semibold">Subject:</span> {exam.subject}
-          </div>
         </div>
 
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
-          <h2 className="text-xl font-semibold mb-3 text-blue-900">
-            📄 Exam Not Yet Parsed
+          <h2 className="text-xl font-semibold mb-3 text-blue-900 flex items-center gap-2">
+            <svg className="animate-spin h-6 w-6 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            Processing PDF...
           </h2>
           <p className="text-blue-800 mb-4">
-            This exam PDF has been uploaded but hasn't been parsed yet. Click the button below to extract questions from the PDF using AI.
+            Analyzing exam pages and extracting questions using AI Vision.
           </p>
           <p className="text-sm text-blue-700 mb-6">
-            ⏱️ Parsing typically takes 30-60 seconds depending on exam length.
+            ⏱️ This typically takes 30-60 seconds depending on exam length.
           </p>
           
           {parseError && (
@@ -329,7 +338,7 @@ export default function ExamViewer({ examId }: ExamViewerProps) {
           )}
 
           {parsing && (
-            <div className="mb-4 p-4 bg-white border border-blue-200 rounded-lg">
+            <div className="p-4 bg-white border border-blue-200 rounded-lg">
               <div className="mb-2 flex justify-between items-center">
                 <span className="text-sm font-medium text-blue-900">{parseMessage}</span>
                 <span className="text-sm font-semibold text-blue-700">{parseProgress}%</span>
@@ -342,24 +351,6 @@ export default function ExamViewer({ examId }: ExamViewerProps) {
               </div>
             </div>
           )}
-
-          <button
-            onClick={handleParseExam}
-            disabled={parsing}
-            className="px-6 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
-          >
-            {parsing ? (
-              <>
-                <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                Parsing...
-              </>
-            ) : (
-              '🚀 Parse Exam Now'
-            )}
-          </button>
         </div>
       </div>
     );
@@ -642,17 +633,33 @@ export default function ExamViewer({ examId }: ExamViewerProps) {
       {/* AI Chatbot Panel */}
       {showChat && (
         <div className="w-96 flex flex-col bg-white border border-gray-300 rounded-lg shadow-lg sticky top-8 h-[calc(100vh-4rem)]">
-          <div className="p-4 border-b border-gray-200 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-t-lg flex justify-between items-center">
-            <div>
-              <h2 className="text-lg font-bold">🤖 AI Study Assistant</h2>
-              <p className="text-xs opacity-90">Ask me about the exam!</p>
+          <div className="p-4 border-b border-gray-200 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-t-lg">
+            <div className="flex justify-between items-start mb-2">
+              <div>
+                <h2 className="text-lg font-bold">🤖 AI Study Assistant</h2>
+                <p className="text-xs opacity-90">Ask me about the exam!</p>
+              </div>
+              <button
+                onClick={() => setShowChat(false)}
+                className="text-white hover:bg-white/20 rounded px-2 py-1 transition-colors"
+              >
+                ✕
+              </button>
             </div>
-            <button
-              onClick={() => setShowChat(false)}
-              className="text-white hover:bg-white/20 rounded px-2 py-1 transition-colors"
-            >
-              ✕
-            </button>
+            <div className="flex items-center gap-2">
+              <label htmlFor="model-select" className="text-xs opacity-90 whitespace-nowrap">
+                Model:
+              </label>
+              <select
+                id="model-select"
+                value={chatModel}
+                onChange={(e) => setChatModel(e.target.value as 'gpt' | 'claude')}
+                className="flex-1 px-2 py-1 text-xs bg-white/20 border border-white/30 rounded text-white backdrop-blur-sm focus:outline-none focus:ring-2 focus:ring-white/50"
+              >
+                <option value="gpt" className="text-gray-900">GPT-4o Mini</option>
+                <option value="claude" className="text-gray-900">Claude 3.5 Sonnet</option>
+              </select>
+            </div>
           </div>
           
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
