@@ -1964,6 +1964,44 @@ Provide your response in JSON format:
 }
 
 /**
+ * Filter out invalid questions that would fail validation
+ * Removes questions with empty text, allowing parser to skip problematic questions
+ * @param data - Raw parsed exam data (potentially with invalid questions)
+ * @returns Data with only valid questions
+ */
+function filterValidQuestions(data: any): any {
+  if (!data || typeof data !== 'object') {
+    return data;
+  }
+  
+  if (Array.isArray(data.questions)) {
+    const originalCount = data.questions.length;
+    
+    // Filter out questions with empty or missing text
+    data.questions = data.questions.filter((q: any, index: number) => {
+      if (!q || typeof q !== 'object') {
+        console.warn(`  ⚠️  Skipping invalid question at index ${index}: not an object`);
+        return false;
+      }
+      
+      if (!q.text || typeof q.text !== 'string' || q.text.trim().length === 0) {
+        console.warn(`  ⚠️  Skipping question ${q.number || index}${q.part || ''}: empty text (blank page or OCR failure)`);
+        return false;
+      }
+      
+      return true;
+    });
+    
+    const filteredCount = originalCount - data.questions.length;
+    if (filteredCount > 0) {
+      console.log(`  📋 Filtered out ${filteredCount} question(s) with empty text`);
+    }
+  }
+  
+  return data;
+}
+
+/**
  * Validate parsed exam data with Zod schema and business logic
  * @param data - Parsed exam data to validate
  * @returns Validated exam data
@@ -2188,24 +2226,26 @@ export async function parsePageWithVisionRetry(
         await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
       }
       
-      // Default to 'both' which means: try GPT-4o FIRST, then Claude ONLY if it fails
+      // Default to 'both' which means: try Claude FIRST, then GPT-4o ONLY if it fails
       // This reduces API costs by preferring the primary model
       let parsed: ParsedExam;
       
       if (provider === 'both') {
         try {
-          parsed = await parsePageWithVision(imageBase64, pageNumber, totalPages, 'openai');
-          console.log(`  ✅ Page ${pageNumber} parsed with GPT-4o Vision`);
-        } catch (error) {
-          console.warn(`  ⚠️  OpenAI Vision failed, trying Claude Vision as fallback...`);
           parsed = await parsePageWithVision(imageBase64, pageNumber, totalPages, 'anthropic');
-          console.log(`  ✅ Page ${pageNumber} parsed with Claude Vision (fallback)`);
+          console.log(`  ✅ Page ${pageNumber} parsed with Claude Vision`);
+        } catch (error) {
+          console.warn(`  ⚠️  Claude Vision failed, trying GPT-4o Vision as fallback...`);
+          parsed = await parsePageWithVision(imageBase64, pageNumber, totalPages, 'openai');
+          console.log(`  ✅ Page ${pageNumber} parsed with GPT-4o Vision (fallback)`);
         }
       } else {
         parsed = await parsePageWithVision(imageBase64, pageNumber, totalPages, provider);
       }
       
-      const validated = validateParsedExam(parsed);
+      // Filter out questions with empty text before validation
+      const filtered = filterValidQuestions(parsed);
+      const validated = validateParsedExam(filtered);
       
       // Check if this is a cover page or page with no questions
       if (validated.questions.length === 0) {
@@ -2255,7 +2295,9 @@ export async function parseChunkWithRetry(
         ? await parseWithBothProviders(chunkContent, chunkIndex, totalChunks)
         : await parseChunkWithLLM(chunkContent, chunkIndex, totalChunks, provider);
       
-      const validated = validateParsedExam(parsed);
+      // Filter out questions with empty text before validation
+      const filtered = filterValidQuestions(parsed);
+      const validated = validateParsedExam(filtered);
       
       console.log(`  ✅ Chunk ${chunkIndex + 1} validated successfully`);
       return validated;
@@ -2916,7 +2958,7 @@ export async function parseExamPDF(
     const questionsWithAnswers = await processAnswerPages(
       pages,
       validatedExam.questions,
-      provider === 'both' ? 'openai' : provider
+      provider === 'both' ? 'anthropic' : provider
     );
     
     // Update validated exam with matched answers

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
+const PUBLIC_BACKEND_URL = process.env.PUBLIC_BACKEND_URL || 'http://localhost';
 
 export async function GET(
   request: NextRequest, 
@@ -30,7 +30,7 @@ export async function GET(
     // Remove any leading slash and preserve encoding
     if (tail.startsWith('/')) tail = tail.slice(1);
 
-    const backendFileUrl = `${BACKEND_URL}/uploads/${tail}`;
+    const backendFileUrl = `${PUBLIC_BACKEND_URL}/uploads/${tail}`;
 
     // Redirect to backend file URL so the backend serves it.
     return NextResponse.redirect(backendFileUrl);

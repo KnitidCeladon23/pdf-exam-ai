@@ -327,7 +327,7 @@ export default function ExamViewer({ examId }: ExamViewerProps) {
             Analyzing exam pages and extracting questions using AI Vision.
           </p>
           <p className="text-sm text-blue-700 mb-6">
-            ⏱️ This typically takes 30-60 seconds depending on exam length.
+            ⏱️ This typically takes 2-5 minutes depending on exam length.
           </p>
           
           {parseError && (

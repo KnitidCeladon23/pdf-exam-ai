@@ -72,6 +72,7 @@ services:
       NEXT_PUBLIC_API_URL: ${PUBLIC_URL:-http://localhost:3001}
       AI_GATEWAY_API_KEY: ${AI_GATEWAY_API_KEY}
       BACKEND_URL: http://backend:3001
+      PUBLIC_BACKEND_URL: ${PUBLIC_URL:-http://localhost}
     ports:
       - "3000:3000"
     networks:
@@ -99,7 +100,7 @@ services:
     networks:
       - pdf-exam-ai-network
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
