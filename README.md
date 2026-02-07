@@ -2,6 +2,8 @@
 
 An AI-powered exam paper parser that converts PDF exam papers into interactive digital formats with intelligent question extraction, automatic answer detection, and an AI chatbot assistant.
 
+Disclaimer: development of this web application is assisted by Copilot.
+
 ## 📚 Table of Contents
 - [Tech Stack](#-tech-stack)
 - [Database Schema](#-database-schema)
@@ -237,10 +239,16 @@ model Answer {
 - ✅ Mathematical notation preserved (fractions, exponents, equations)
 - ✅ Chinese characters and symbols accurately extracted
 
-### **Comprehension & Context**
-- ✅ **English/Chinese comprehension passages**: First question includes full passage, subsequent questions reference it
-- ✅ **Fill-in-the-blanks passages**: Full passage with blanks shown in first question
-- ✅ **Multi-part questions**: Parent context combined with first sub-part
+### **Comprehension & Context (Not optimised)**
+- ⏳ **English/Chinese comprehension passages**: First question includes full passage, subsequent questions reference it
+- ⏳ **Fill-in-the-blanks passages**: Full passage with blanks shown in first question
+- ⏳ **Multi-part questions**: Parent context combined with first sub-part
+
+### **AI-assisted Verification**  
+Provides an additional set of answers to address the following possible issues:
+- ✅ **Incorrect parsing of answers**
+- ✅ **Answers not provided**
+- ✅ **Inaccuracy in provided answers (typo/conceptual error)**
 
 ---
 
@@ -248,7 +256,7 @@ model Answer {
 
 ### **Step-by-Step Workflow**
 
-```mermaid
+```
 Start
   |
   v
