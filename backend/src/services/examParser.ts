@@ -449,6 +449,12 @@ Look for:
 - Visual separators (lines, spacing)
 - Start of next question or end of page
 
+CRITICAL NEW RULE:
+- ONLY return boundaries for questions that are CLEARLY VISIBLE on this page
+- If a question from the expected list is NOT clearly detectable (no visible question number, text, or content), DO NOT create a boundary for it
+- The page segment MUST have clear indication of the question number and its corresponding text, diagrams, or other contents
+- It's better to return FEWER boundaries than to guess incorrectly
+
 Return JSON:
 {
   "boundaries": [
@@ -474,7 +480,8 @@ Return JSON:
 }
 
 IMPORTANT:
-- Return boundaries for ALL ${questionsOnPage.length} questions expected
+- Return boundaries ONLY for questions that are CLEARLY VISIBLE on this page
+- If a question cannot be detected, OMIT it from the boundaries array (return fewer than ${questionsOnPage.length} if needed)
 - Percentages must be 0-100
 - Ensure boundaries don't overlap significantly
 - Include each sub-part separately with its notation (A/a/i)
@@ -578,9 +585,16 @@ export async function cropQuestionSegments(
     for (let i = 0; i < boundaries.length; i++) {
       const boundary = boundaries[i];
       
-      // Convert percentages to pixel coordinates
-      const startY = Math.floor((boundary.topPercentage / 100) * pageHeight);
-      const endY = Math.ceil((boundary.bottomPercentage / 100) * pageHeight);
+      // Convert percentages to pixel coordinates with ±7% padding
+      // This allows segments to overlap slightly to capture more context
+      const PADDING_PERCENT = 7; // ±7% padding as requested
+      
+      // Apply padding while ensuring we stay within 0-100% bounds
+      const paddedTopPercent = Math.max(0, boundary.topPercentage - PADDING_PERCENT);
+      const paddedBottomPercent = Math.min(100, boundary.bottomPercentage + PADDING_PERCENT);
+      
+      const startY = Math.floor((paddedTopPercent / 100) * pageHeight);
+      const endY = Math.ceil((paddedBottomPercent / 100) * pageHeight);
       const height = endY - startY;
       
       if (height <= 0) {
@@ -1146,7 +1160,8 @@ CRITICAL RULES:
 3. If the image contains insufficient content or no questions, return an empty questions array
 4. Analyze the image from TOP to BOTTOM, LEFT to RIGHT, following natural reading order
 5. QUESTION NUMBERING: Question numbers typically appear on the left margin or embedded in text (e.g., "1.", "Q1:", "Question 1")
-6. Preserve exact question numbering including sub-parts with MULTIPLE notations:
+6. **CONTEXT IS CRITICAL**: Capture ALL textual and visual content surrounding each question. Include diagrams, charts, tables, and their labels as detailed descriptions. This context is VITAL for accurate question understanding and answer generation.
+7. Preserve exact question numbering including sub-parts with MULTIPLE notations:
    - Uppercase letters: 3A, 3B, 3C
    - Lowercase letters: 5a, 5b, 5c  
    - Lowercase roman numerals: 7i, 7ii, 7iii, 7iv, 7v
@@ -1154,13 +1169,17 @@ CRITICAL RULES:
      * If you see sequential letters (a, b, c), it's likely alphabetic
      * If you see "i, ii, iii", it's roman numerals (NOT letters i, j, k)
      * Roman numerals: i=1, ii=2, iii=3, iv=4, v=5, vi=6, vii=7, viii=8, ix=9, x=10
-7. Identify question types: "MCQ" (multiple choice) or "Open-ended"
-8. For MCQ: extract ALL options (A, B, C, D, etc.) and identify the correct answer if marked
-9. For Open-ended: extract model answer if provided (often on separate answer pages)
-10. VISUAL ELEMENTS: If you see diagrams, charts, mathematical figures, or images:
-   - Note "[DIAGRAM PRESENT]" or "[IMAGE PRESENT]" in the image field
-   - Include any labels, captions, or references in the question text
-11. Preserve ALL mathematical notation, formulas, and special characters exactly as shown
+8. Identify question types: "MCQ" (multiple choice) or "Open-ended"
+9. For MCQ: extract ALL options (A, B, C, D, etc.) and identify the correct answer if marked
+10. For Open-ended: extract model answer if provided (often on separate answer pages)
+11. **VISUAL ELEMENTS ARE ESSENTIAL**: Diagrams, charts, tables, and images are CRITICAL for understanding questions:
+   - In the image field, provide DETAILED descriptions of all visual elements: "[DIAGRAM: Triangle ABC with side AB=5cm, BC=7cm, angle ABC=60°, with perpendicular height drawn from C to AB]"
+   - For tables/charts: Describe structure, headers, and data: "[TABLE: 3 columns (Name, Score, Grade) with 5 rows of student data]"
+   - For graphs: Include axis labels, scale, plotted points/lines: "[GRAPH: Line graph showing temperature (°C) vs time (hours), y-axis 0-30°C, x-axis 0-24h, rising curve from 15°C to 25°C]"
+   - For mathematical diagrams: Include ALL labels, measurements, angles, coordinates
+   - Include these detailed descriptions in BOTH the image field AND incorporate relevant details in the question text where appropriate
+   - The AI will use these descriptions to answer questions, so be thorough and precise
+12. Preserve ALL mathematical notation, formulas, and special characters exactly as shown
 12. **MULTI-PART QUESTIONS WITH CONTEXT**: When a parent question provides context for sub-parts:
     - EXAMPLE: "13. School A has 3064 books. School B has 4 times as many."
       - "a) How many more books does School B have?"
@@ -1229,10 +1248,17 @@ SUBJECT-SPECIFIC VISUAL ANALYSIS:
     - Example: "[DIAGRAM: Plant cell showing nucleus, chloroplast, cell wall, vacuole]"
     - AI must use this visual context when suggesting/verifying answers
 
-VISUAL ELEMENT DETECTION:
-- Identify ALL diagrams, charts, graphs, illustrations, or images in the page
+VISUAL ELEMENT DETECTION (CRITICAL FOR CONTEXT):
+- Identify ALL diagrams, charts, graphs, illustrations, or images on the page
 - When a question references "the diagram above/below", "Figure 1", "the picture", etc.
-- Mark in the image field: "[DIAGRAM: brief description]" (e.g., "[DIAGRAM: Triangle with angles]")
+- Provide DETAILED descriptions in the image field, not just brief mentions:
+  * BAD: "[DIAGRAM: Triangle with angles]"
+  * GOOD: "[DIAGRAM: Triangle ABC with vertex A at top, AB=6cm marked on left side, BC=8cm marked on bottom, AC=10cm marked on right side, right angle marked at B with square symbol]"
+- For shared diagrams (multiple questions reference same visual):
+  * Include the FULL detailed description in the FIRST question that uses it
+  * Subsequent questions can reference it briefly: "[DIAGRAM: See Question 3]"
+- Capture ALL labels, measurements, annotations, and contextual details from visuals
+- These descriptions enable the AI to understand and answer questions correctly - be thorough!
 - For questions without visual elements, set image field to null
 
 SUBJECTS: Mathematics, English, Chinese (Simplified Mandarin), Science
@@ -1288,10 +1314,12 @@ Return JSON in this exact structure:
       "type": "Open-ended",
       "options": [],
       "correctAnswer": "Model answer if visible on page",
-      "image": "[DIAGRAM: Triangle ABC with angles marked]"
+      "image": "[DIAGRAM: Triangle ABC with vertex labels, side AB=6cm on left, side BC=8cm on bottom, side AC=10cm on right, right angle at B marked with square symbol, height h drawn from B to AC]"
     }
   ]
 }
+
+CRITICAL: The "image" field should contain DETAILED visual descriptions with ALL measurements, labels, and contextual information. This data is essential for the AI to process questions correctly.
 
 IMPORTANT:
 - If no questions are visible on this page, return {"subject": "Unknown", "name": "No questions", "estimatedGrade": "Unknown", "questions": []}
