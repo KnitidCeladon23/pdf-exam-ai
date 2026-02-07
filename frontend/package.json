@@ -12,6 +12,7 @@
     "test:coverage": "jest --coverage"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.38",
     "@ai-sdk/openai": "^3.0.25",
     "ai": "^6.0.73",
     "dotenv": "^17.2.3",
