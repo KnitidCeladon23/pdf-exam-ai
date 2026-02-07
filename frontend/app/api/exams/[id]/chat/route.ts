@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateText } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
+import { createAnthropic } from '@ai-sdk/anthropic';
 
 // Initialize OpenAI client with Vercel AI Gateway support (same as backend)
 function getOpenAIClient() {
@@ -25,15 +26,35 @@ function getOpenAIClient() {
   }
 }
 
+// Initialize Anthropic client with Vercel AI Gateway support
+function getAnthropicClient() {
+  const gatewayApiKey = process.env.AI_GATEWAY_API_KEY;
+  
+  if (gatewayApiKey) {
+    console.log('🔗 Using Vercel AI Gateway for Anthropic chat requests');
+    return createAnthropic({
+      apiKey: gatewayApiKey,
+      baseURL: 'https://ai-gateway.vercel.sh/v1',
+    });
+  } else {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      throw new Error('ANTHROPIC_API_KEY or AI_GATEWAY_API_KEY environment variable must be set');
+    }
+    return createAnthropic({
+      apiKey,
+    });
+  }
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const openai = getOpenAIClient();
     const { id } = await params;
     const body = await request.json();
-    const { message, examContext, conversationHistory } = body;
+    const { message, examContext, conversationHistory, model = 'gpt' } = body;
 
     if (!message || typeof message !== 'string') {
       return NextResponse.json(
@@ -62,10 +83,7 @@ export async function POST(
       content: message,
     });
 
-    // Call Vercel AI SDK with GPT model
-    const result = await generateText({
-      model: openai('gpt-4o-mini'),
-      system: `You are an AI tutoring assistant helping students understand exam content. Your role is to:
+    const systemPrompt = `You are an AI tutoring assistant helping students understand exam content. Your role is to:
 
 1. Answer questions about the exam topics and help clarify concepts
 2. Guide students toward understanding WITHOUT giving direct answers to exam questions
@@ -76,11 +94,29 @@ export async function POST(
 EXAM CONTEXT:
 ${examContext}
 
-Remember: Your goal is to help students learn and understand, not to give them the answers directly.`,
-      messages: messages as any,
-      temperature: 0.7,
-      maxRetries: 2,
-    });
+Remember: Your goal is to help students learn and understand, not to give them the answers directly.`;
+
+    // Call Vercel AI SDK with selected model
+    let result;
+    if (model === 'claude') {
+      const anthropic = getAnthropicClient();
+      result = await generateText({
+        model: anthropic('claude-3-5-sonnet-20241022'),
+        system: systemPrompt,
+        messages: messages as any,
+        temperature: 0.7,
+        maxRetries: 2,
+      });
+    } else {
+      const openai = getOpenAIClient();
+      result = await generateText({
+        model: openai('gpt-4o-mini'),
+        system: systemPrompt,
+        messages: messages as any,
+        temperature: 0.7,
+        maxRetries: 2,
+      });
+    }
 
     const response = result.text || 'I apologize, but I couldn\'t generate a response. Please try again.';
 
