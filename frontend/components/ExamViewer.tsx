@@ -57,7 +57,6 @@ export default function ExamViewer({ examId }: ExamViewerProps) {
   const [parseMessage, setParseMessage] = useState('');
   const [userAnswers, setUserAnswers] = useState<Map<number, string>>(new Map());
   const [checkedQuestions, setCheckedQuestions] = useState<Set<number>>(new Set());
-  const [showImages, setShowImages] = useState<Map<number, boolean>>(new Map());
   const [showAiAnswers, setShowAiAnswers] = useState<Map<number, boolean>>(new Map());
   
   // Chatbot state
@@ -68,14 +67,6 @@ export default function ExamViewer({ examId }: ExamViewerProps) {
   const [chatLoading, setChatLoading] = useState(false);
   const [showChat, setShowChat] = useState(true);
   const [chatModel, setChatModel] = useState<'gpt' | 'claude'>('gpt');
-
-  const toggleImage = (questionId: number) => {
-    setShowImages(prev => {
-      const newMap = new Map(prev);
-      newMap.set(questionId, !newMap.get(questionId));
-      return newMap;
-    });
-  };
 
   const toggleAiAnswer = (questionId: number) => {
     setShowAiAnswers(prev => {
@@ -147,6 +138,10 @@ export default function ExamViewer({ examId }: ExamViewerProps) {
           
           if (data.type === 'start') {
             setParseMessage(data.message);
+            // Check if joining existing session
+            if (data.message.includes('Joining existing')) {
+              console.log('👥 Joined existing parsing session');
+            }
           } else if (data.type === 'progress') {
             setParseProgress(data.progress);
             setParseMessage(data.message);
@@ -315,41 +310,68 @@ export default function ExamViewer({ examId }: ExamViewerProps) {
           <h1 className="text-3xl font-bold mb-2 text-black">{exam.name}</h1>
         </div>
 
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
-          <h2 className="text-xl font-semibold mb-3 text-blue-900 flex items-center gap-2">
-            <svg className="animate-spin h-6 w-6 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            Processing PDF...
+        <div className={`border rounded-lg p-6 ${
+          parseError ? 'bg-red-50 border-red-200' : 'bg-blue-50 border-blue-200'
+        }`}>
+          <h2 className="text-xl font-semibold mb-3 flex items-center gap-2" style={{ color: parseError ? '#991b1b' : '#1e40af' }}>
+            {parseError ? (
+              // Error icon
+              <svg className="h-6 w-6 text-red-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            ) : (
+              // Loading spinner
+              <svg className="animate-spin h-6 w-6 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+            )}
+            {parseError ? 'Parsing Failed' : 'Processing PDF...'}
           </h2>
-          <p className="text-blue-800 mb-4">
-            Analyzing exam pages and extracting questions using AI Vision.
-          </p>
-          <p className="text-sm text-blue-700 mb-6">
-            ⏱️ This typically takes 2-5 minutes depending on exam length.
-          </p>
           
-          {parseError && (
-            <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
-              <p className="text-red-800 font-semibold mb-1">Error:</p>
-              <p className="text-red-700">{parseError}</p>
-            </div>
-          )}
-
-          {parsing && (
-            <div className="p-4 bg-white border border-blue-200 rounded-lg">
-              <div className="mb-2 flex justify-between items-center">
-                <span className="text-sm font-medium text-blue-900">{parseMessage}</span>
-                <span className="text-sm font-semibold text-blue-700">{parseProgress}%</span>
+          {parseError ? (
+            <>
+              <p className="text-red-800 mb-4">
+                An error occurred while processing your exam.
+              </p>
+              <div className="mb-6 p-4 bg-red-100 border border-red-300 rounded-lg">
+                <p className="text-red-800 font-semibold mb-1">Error Details:</p>
+                <p className="text-red-700 text-sm">{parseError}</p>
               </div>
-              <div className="w-full bg-blue-100 rounded-full h-3 overflow-hidden">
-                <div 
-                  className="bg-blue-600 h-full rounded-full transition-all duration-300 ease-out"
-                  style={{ width: `${parseProgress}%` }}
-                ></div>
-              </div>
-            </div>
+              <button
+                onClick={() => window.location.href = '/'}
+                className="px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors font-medium flex items-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+                </svg>
+                Return to Home Page
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="text-blue-800 mb-4">
+                Analyzing exam pages and extracting questions using AI Vision.
+              </p>
+              <p className="text-sm text-blue-700 mb-6">
+                ⏱️ This typically takes 2-5 minutes depending on exam length.
+              </p>
+              
+              {parsing && (
+                <div className="p-4 bg-white border border-blue-200 rounded-lg">
+                  <div className="mb-2 flex justify-between items-center">
+                    <span className="text-sm font-medium text-blue-900">{parseMessage}</span>
+                    <span className="text-sm font-semibold text-blue-700">{parseProgress}%</span>
+                  </div>
+                  <div className="w-full bg-blue-100 rounded-full h-3 overflow-hidden">
+                    <div 
+                      className="bg-blue-600 h-full rounded-full transition-all duration-300 ease-out"
+                      style={{ width: `${parseProgress}%` }}
+                    ></div>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -403,26 +425,16 @@ export default function ExamViewer({ examId }: ExamViewerProps) {
                 </div>
                 <p className="text-gray-800 text-lg">{question.text}</p>
                 {question.image && question.image.length > 0 && (
-                  <div className="mt-3">
-                    <button
-                      onClick={() => toggleImage(question.id)}
-                      className="mb-2 px-3 py-1.5 text-sm bg-blue-50 text-blue-600 rounded hover:bg-blue-100 transition-colors flex items-center gap-1"
-                      type="button"
-                    >
-                      {showImages.get(question.id) ? '📷 Hide' : '📷 Show'} {question.image.length > 1 ? `Images (${question.image.length})` : 'Image'}
-                    </button>
-                    {showImages.get(question.id) && (
-                      <div className="space-y-2">
-                        {question.image.map((imgPath: string, imgIdx: number) => (
-                          <img
-                            key={imgIdx}
-                            src={imgPath}
-                            alt={`Question ${getQuestionLabel(question)} diagram ${imgIdx + 1}`}
-                            className="max-w-full h-auto rounded border border-gray-300"
-                          />
-                        ))}
+                  <div className="mt-4 space-y-3">
+                    {question.image.map((imgPath: string, imgIdx: number) => (
+                      <div key={imgIdx}>
+                        <img
+                          src={imgPath}
+                          alt={`Question ${getQuestionLabel(question)} - Image ${imgIdx + 1}`}
+                          className="max-w-full h-auto rounded border border-gray-300 shadow-sm"
+                        />
                       </div>
-                    )}
+                    ))}
                   </div>
                 )}
               </div>

@@ -172,7 +172,7 @@ export default function PDFList() {
                   </>
                 ) : (
                   <>
-                    <a href={proxyLink} target="_blank" rel="noreferrer" className="px-3 py-1 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700">Open PDF</a>
+                    <a href={exam.url} target="_blank" rel="noreferrer" className="px-3 py-1 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700">Open PDF</a>
                     <a href={`/exam/${exam.id}`} className="px-3 py-1 bg-green-600 text-white rounded-md text-sm hover:bg-green-700">View Exam</a>
                     <button
                       onClick={() => handleEdit(exam)}
