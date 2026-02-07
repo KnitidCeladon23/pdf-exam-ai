@@ -58,13 +58,13 @@ async function testPDFParsing() {
   const cpuStart = process.cpuUsage();
 
   try {
-    // Parse the PDF using 'openai' provider (single LLM for testing)
-    // Use 'both' for production dual-LLM approach
+    // Parse the PDF using Vision API with 'openai' provider
+    // Vision API provides much better accuracy than OCR-based text extraction
     const result = await parseExamPDF(
       buffer,
       filename,
       '/test-pdf',
-      'openai', // Single provider for faster testing
+      'openai', // Use GPT-4o Vision (recommended) or 'anthropic' for Claude Vision
       3, // maxRetries
       undefined, // no existing exam
       (progress, message) => {
