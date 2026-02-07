@@ -49,3 +49,11 @@ Assumptions:
 7. After the processing of the answers, have the LLM also generate an answer based on the question, and raise an indicator if the answer processed from the pdf file is inaccurate or incorrect (perhaps due to low pdf image quality, or a typo).
 
 8. Create a docker configuration to host the web application on the server.
+
+9. Replace OCR with GPT-4o vision due to poor accuracy.
+
+10. Include a dropdown option for the chatbot component to allow the user to choose between GPT and Claude model. 
+
+11. Remove Subject text from parse page as it will always show unknown before parsing.
+
+12. Remove the option for user to manually parse exam paper. Parsing should automatically occur if the exam is not yet parsed after user selects View Exam from the home page. Remove the Parsing button, change the icon in Processing PDF text to a loading icon, like the one in Parsing button.
