@@ -712,7 +712,7 @@ export const QuestionSchema = z.object({
   text: z.string().min(5),
   type: z.enum(['MCQ', 'Open-ended']),
   options: z.array(z.string()),
-  correctAnswer: z.string().optional().default(""),
+  correctAnswer: z.string().nullable().transform(val => val ?? ""),
   image: z.string().nullable(),
 });
 
@@ -1464,15 +1464,15 @@ function mergeExamResults(
       merged.questions.push(secQ);
     } else {
       // Question exists in both - compare and use more complete version
-      if (secQ.text.length > exists.text.length) {
+      if (secQ.text && exists.text && secQ.text.length > exists.text.length) {
         console.log(`  🔄 Using longer text for Q${secQ.number}${secQ.part || ''} from secondary`);
         exists.text = secQ.text;
       }
-      if (secQ.correctAnswer.length > exists.correctAnswer.length) {
+      if (secQ.correctAnswer && exists.correctAnswer && secQ.correctAnswer.length > exists.correctAnswer.length) {
         console.log(`  🔄 Using longer answer for Q${secQ.number}${secQ.part || ''} from secondary`);
         exists.correctAnswer = secQ.correctAnswer;
       }
-      if (secQ.options.length > exists.options.length) {
+      if (secQ.options && exists.options && secQ.options.length > exists.options.length) {
         console.log(`  🔄 Using more options for Q${secQ.number}${secQ.part || ''} from secondary`);
         exists.options = secQ.options;
       }

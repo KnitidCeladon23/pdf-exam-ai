@@ -25,13 +25,12 @@ function getOpenAIClient() {
   }
 }
 
-const openai = getOpenAIClient();
-
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const openai = getOpenAIClient();
     const { id } = await params;
     const body = await request.json();
     const { message, examContext, conversationHistory } = body;
