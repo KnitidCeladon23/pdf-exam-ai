@@ -1,11 +1,11 @@
 /**
  * Exam PDF Parser Service
  * 
- * This service handles the extraction and parsing of exam PDFs using LLMs.
- * It supports both digital PDFs and scanned documents (via OCR).
+ * This service handles the extraction and parsing of exam PDFs using Vision LLMs.
+ * Uses GPT-4o Vision and Claude Sonnet 3.5 Vision for direct image analysis.
+ * No OCR needed - multimodal models read text and diagrams directly from images.
  */
 
-import Tesseract from 'tesseract.js';
 import { PDFDocument } from 'pdf-lib';
 import sharp from 'sharp';
 import * as fs from 'fs';
@@ -14,6 +14,10 @@ import { z } from 'zod';
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import { pdfToPng } from 'pdf-to-png-converter';
+
+// @deprecated - Tesseract OCR is no longer used in main pipeline (replaced by Vision API)
+// Kept only for backward compatibility with old OCR functions
+import Tesseract from 'tesseract.js';
 
 // DISABLED: pdf-parse dynamic import (causes version conflicts with pdf-to-png-converter)
 // let pdfParse: any = null;
@@ -243,9 +247,381 @@ export async function extractImagesFromPDF(
   return imagePaths;
 }
 
+/**
+ * Extract PDF pages as image buffers for Vision API processing
+ * @param buffer - PDF file buffer
+ * @returns Array of page image buffers with metadata
+ */
+export async function extractPagesAsImages(
+  buffer: Buffer
+): Promise<Array<{ pageNumber: number; imageBuffer: Buffer; base64: string }>> {
+  const pages: Array<{ pageNumber: number; imageBuffer: Buffer; base64: string }> = [];
+  
+  try {
+    console.log(`📷 Converting PDF pages to images for Vision API...`);
+    
+    // Convert Buffer to ArrayBuffer for pdf-to-png-converter
+    const arrayBuffer = buffer.buffer.slice(
+      buffer.byteOffset,
+      buffer.byteOffset + buffer.byteLength
+    );
+    
+    // Convert PDF pages to PNG images
+    const pngPages = await pdfToPng(arrayBuffer, {
+      disableFontFace: false,
+      useSystemFonts: false,
+    });
+    
+    console.log(`  ✅ Extracted ${pngPages.length} page images`);
+    
+    // Process each page
+    for (let i = 0; i < pngPages.length; i++) {
+      const page = pngPages[i];
+      
+      if (page.content) {
+        const base64 = page.content.toString('base64');
+        pages.push({
+          pageNumber: i + 1,
+          imageBuffer: page.content,
+          base64: base64,
+        });
+      }
+    }
+    
+    console.log(`  ✅ Prepared ${pages.length} pages for Vision API processing`);
+    
+  } catch (error) {
+    console.error('❌ Page extraction failed:', error);
+    throw new Error(`Failed to extract pages: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+  
+  return pages;
+}
+
+/**
+ * Create segmented question images from full page images
+ * Groups questions by page and crops each page into individual question segments
+ * @param questions - Array of parsed questions
+ * @param examId - Exam ID for organizing images
+ * @param totalPages - Total number of pages in the exam
+ * @returns Array of image paths (one per question) in question order
+ */
+export async function createQuestionSegments(
+  questions: ParsedQuestion[],
+  examId: number,
+  totalPages: number
+): Promise<string[]> {
+  console.log(`✂️  Creating question segments for ${questions.length} questions across ${totalPages} pages...`);
+  
+  const questionImagePaths: string[] = [];
+  const uploadsDir = path.join(process.cwd(), 'uploads', 'images', `exam-${examId}`);
+  
+  // Group questions by their estimated page
+  const questionsByPage: Map<number, ParsedQuestion[]> = new Map();
+  
+  questions.forEach((q, index) => {
+    // Estimate page number based on question position
+    const pageIndex = Math.floor((index / questions.length) * totalPages);
+    const estimatedPage = Math.min(pageIndex + 1, totalPages);
+    
+    if (!questionsByPage.has(estimatedPage)) {
+      questionsByPage.set(estimatedPage, []);
+    }
+    questionsByPage.get(estimatedPage)!.push(q);
+  });
+  
+  console.log(`  📊 Distribution: ${Array.from(questionsByPage.entries()).map(([p, qs]) => `Page ${p}: ${qs.length}q`).join(', ')}`);
+  
+  // Process each page and create segments
+  for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+    const questionsOnPage = questionsByPage.get(pageNum);
+    
+    if (!questionsOnPage || questionsOnPage.length === 0) {
+      console.log(`  ⏭️  Skipping page ${pageNum} (no questions)`);
+      continue;
+    }
+    
+    // Read the full page image from disk
+    const pageImagePath = path.join(uploadsDir, `page-${pageNum}.png`);
+    
+    if (!fs.existsSync(pageImagePath)) {
+      console.warn(`  ⚠️  Page image not found: ${pageImagePath}`);
+      // Fall back to using full page image for all questions on this page
+      const fallbackPath = `/uploads/images/exam-${examId}/page-${pageNum}.png`;
+      for (let i = 0; i < questionsOnPage.length; i++) {
+        questionImagePaths.push(fallbackPath);
+      }
+      continue;
+    }
+    
+    try {
+      // Read page buffer
+      const pageBuffer = fs.readFileSync(pageImagePath);
+      
+      // Convert page buffer to base64 for Vision API
+      const pageBase64 = pageBuffer.toString('base64');
+      
+      // Detect question boundaries using Vision API
+      const boundaries = await detectQuestionBoundaries(
+        pageBase64,
+        questionsOnPage,
+        pageNum
+      );
+      
+      // Crop into segments using detected boundaries
+      const segments = await cropQuestionSegments(
+        pageBuffer,
+        boundaries,
+        examId,
+        pageNum
+      );
+      
+      // Add segments to result array
+      questionImagePaths.push(...segments);
+      console.log(`  ✅ Page ${pageNum}: Created ${segments.length} segments using Vision-detected boundaries`);
+      
+    } catch (error) {
+      console.error(`  ❌ Failed to segment page ${pageNum}:`, error);
+      // Fall back to full page image
+      const fallbackPath = `/uploads/images/exam-${examId}/page-${pageNum}.png`;
+      for (let i = 0; i < questionsOnPage.length; i++) {
+        questionImagePaths.push(fallbackPath);
+      }
+    }
+  }
+  
+  console.log(`  ✅ Created ${questionImagePaths.length} total question segments`);
+  return questionImagePaths;
+}
+
+/**
+ * Schema for question boundary detection
+ */
+const QuestionBoundarySchema = z.object({
+  questionNumber: z.number(),
+  questionPart: z.string().nullable().transform(val => val || null),
+  topPercentage: z.number().min(0).max(100),
+  bottomPercentage: z.number().min(0).max(100),
+});
+
+const QuestionBoundariesSchema = z.object({
+  boundaries: z.array(QuestionBoundarySchema),
+});
+
+type QuestionBoundary = z.infer<typeof QuestionBoundarySchema>;
+
+/**
+ * Detect question boundaries on a page using Vision API
+ * @param imageBase64 - Base64-encoded page image
+ * @param questionsOnPage - Questions expected on this page
+ * @param pageNumber - Page number
+ * @returns Array of boundaries with top/bottom percentages
+ */
+async function detectQuestionBoundaries(
+  imageBase64: string,
+  questionsOnPage: ParsedQuestion[],
+  pageNumber: number
+): Promise<QuestionBoundary[]> {
+  console.log(`  🔍 Detecting boundaries for ${questionsOnPage.length} questions on page ${pageNumber}...`);
+  
+  const questionList = questionsOnPage.map(q => 
+    `Question ${q.number}${q.part || ''}`
+  ).join(', ');
+  
+  const prompt = `Analyze this exam page and identify the EXACT vertical positions where each question begins and ends.
+
+Expected questions on this page: ${questionList}
+
+For EACH question, determine:
+1. The TOP position (as percentage from top of page, 0-100)
+2. The BOTTOM position (as percentage from top of page, 0-100)
+
+Look for:
+- Question numbers (e.g., "1.", "Q1", "Question 1")
+- Sub-parts can use MULTIPLE notations:
+  * Uppercase letters: 3A, 3B, 3C
+  * Lowercase letters: 5a, 5b, 5c
+  * Lowercase roman numerals: 7i, 7ii, 7iii, 7iv, 7v
+- IMPORTANT: Smartly infer which notation is used based on context
+  * If you see "1a, 1b", use lowercase letters
+  * If you see "2i, 2ii", use roman numerals (even though 'i' looks like a letter)
+  * Context clues: roman numerals usually go i, ii, iii, iv, v (not just i, j, k)
+- Visual separators (lines, spacing)
+- Start of next question or end of page
+
+Return JSON:
+{
+  "boundaries": [
+    {
+      "questionNumber": 1,
+      "questionPart": null,
+      "topPercentage": 5,
+      "bottomPercentage": 48
+    },
+    {
+      "questionNumber": 2,
+      "questionPart": "a",
+      "topPercentage": 48,
+      "bottomPercentage": 70
+    },
+    {
+      "questionNumber": 2,
+      "questionPart": "b",
+      "topPercentage": 70,
+      "bottomPercentage": 95
+    }
+  ]
+}
+
+IMPORTANT:
+- Return boundaries for ALL ${questionsOnPage.length} questions expected
+- Percentages must be 0-100
+- Ensure boundaries don't overlap significantly
+- Include each sub-part separately with its notation (A/a/i)
+- Return ONLY valid JSON (can be wrapped in code blocks)`;
+
+  try {
+    const openai = getOpenAIClient();
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:image/png;base64,${imageBase64}`,
+                detail: 'high',
+              },
+            },
+            {
+              type: 'text',
+              text: prompt,
+            },
+          ],
+        },
+      ],
+      max_tokens: 2048,
+      temperature: 0.1,
+    });
+
+    const content = completion.choices[0].message.content;
+    if (!content) {
+      throw new Error('No response from Vision API');
+    }
+
+    // Extract JSON from response (may be wrapped in markdown code blocks)
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('No JSON found in Vision API response');
+    }
+
+    const parsed = QuestionBoundariesSchema.parse(JSON.parse(jsonMatch[0]));
+    console.log(`  ✅ Detected ${parsed.boundaries.length} question boundaries`);
+    
+    return parsed.boundaries;
+  } catch (error) {
+    console.error(`  ⚠️  Boundary detection failed, falling back to even split:`, error instanceof Error ? error.message : error);
+    // Fallback: split page evenly
+    const evenSplit = questionsOnPage.map((q, i) => ({
+      questionNumber: q.number,
+      questionPart: q.part,
+      topPercentage: (i / questionsOnPage.length) * 100,
+      bottomPercentage: ((i + 1) / questionsOnPage.length) * 100,
+    }));
+    return evenSplit;
+  }
+}
+
+/**
+ * Crop page image into individual question segments using detected boundaries
+ * @param pageBuffer - Full page image buffer
+ * @param boundaries - Question boundaries with top/bottom percentages
+ * @param examId - Exam ID for organizing images
+ * @param pageNumber - Page number
+ * @returns Array of image paths for each question segment
+ */
+export async function cropQuestionSegments(
+  pageBuffer: Buffer,
+  boundaries: QuestionBoundary[],
+  examId: number,
+  pageNumber: number
+): Promise<string[]> {
+  const questionImagePaths: string[] = [];
+  
+  try {
+    if (boundaries.length === 0) {
+      return [];
+    }
+    
+    // Create uploads directory if it doesn't exist
+    const uploadsDir = path.join(process.cwd(), 'uploads', 'images', `exam-${examId}`);
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+    
+    // Get image metadata
+    const image = sharp(pageBuffer);
+    const metadata = await image.metadata();
+    const pageHeight = metadata.height || 0;
+    const pageWidth = metadata.width || 0;
+    
+    if (pageHeight === 0 || pageWidth === 0) {
+      console.warn(`  ⚠️  Invalid image dimensions for page ${pageNumber}`);
+      return [];
+    }
+    
+    console.log(`  ✂️  Cropping page ${pageNumber} using detected boundaries...`);
+    
+    // Crop each question segment based on detected boundaries
+    for (let i = 0; i < boundaries.length; i++) {
+      const boundary = boundaries[i];
+      
+      // Convert percentages to pixel coordinates
+      const startY = Math.floor((boundary.topPercentage / 100) * pageHeight);
+      const endY = Math.ceil((boundary.bottomPercentage / 100) * pageHeight);
+      const height = endY - startY;
+      
+      if (height <= 0) {
+        console.warn(`  ⚠️  Invalid height for question ${boundary.questionNumber}${boundary.questionPart || ''}`);
+        continue;
+      }
+      
+      const segmentBuffer = await sharp(pageBuffer)
+        .extract({
+          left: 0,
+          top: startY,
+          width: pageWidth,
+          height: height,
+        })
+        .toBuffer();
+      
+      // Save segment
+      const imageName = `page-${pageNumber}-q${i + 1}.png`;
+      const imagePath = path.join(uploadsDir, imageName);
+      fs.writeFileSync(imagePath, segmentBuffer);
+      
+      // Store relative path for serving via Express
+      const relativeImagePath = `/uploads/images/exam-${examId}/${imageName}`;
+      questionImagePaths.push(relativeImagePath);
+    }
+    
+    console.log(`  ✅ Created ${questionImagePaths.length} question segments for page ${pageNumber}`);
+    
+  } catch (error) {
+    console.error(`❌ Question segmentation failed for page ${pageNumber}:`, error);
+    // Return empty array on error - questions will have no images
+  }
+  
+  return questionImagePaths;
+}
+
 // ============================================================================
-// Step 2: Text Preprocessing & Normalization
+// Step 2: Text Preprocessing & Normalization (DEPRECATED for Vision API)
 // ============================================================================
+// Note: Most preprocessing is now handled by Vision APIs directly
+// These functions are kept for backward compatibility and fallback scenarios
 
 /**
  * Preprocess and normalize extracted text
@@ -709,7 +1085,7 @@ export function validateChunks(
 export const QuestionSchema = z.object({
   number: z.number().int().positive(),
   part: z.string().nullable(),
-  text: z.string().min(5),
+  text: z.string().min(1), // Reduced from 5 to support Chinese characters (汉字 can be very concise)
   type: z.enum(['MCQ', 'Open-ended']),
   options: z.array(z.string()),
   correctAnswer: z.string().nullable().transform(val => val ?? ""),
@@ -756,74 +1132,174 @@ export interface ExamMetadata {
 }
 
 // ============================================================================
-// Step 5: LLM Prompt Engineering
+// Step 5: Vision LLM Prompt Engineering
 // ============================================================================
 
 /**
- * System prompt for LLM exam parser
+ * System prompt for Vision LLM exam parser
  */
-export const SYSTEM_PROMPT = `You are an expert exam paper parser specializing in educational assessments from PRIMARY to HIGH SCHOOL levels.
+export const VISION_SYSTEM_PROMPT = `You are an expert exam paper parser specializing in educational assessments from PRIMARY to HIGH SCHOOL levels. You analyze exam paper images directly.
 
 CRITICAL RULES:
-1. Extract ONLY questions that appear in the provided text - DO NOT generate, invent, or create sample questions
-2. If the text contains insufficient content or no questions, return an empty questions array
-3. Extract questions sequentially from top to bottom exactly as they appear
-4. QUESTION NUMBERING: Generally, question numbers appear on the LEFT side of the question text (e.g., "1." or "Q1:" followed by the question). However, in some cases, the question number may be embedded WITHIN the question text itself. Adapt to the document's format and reasonably infer the question structure.
-5. Preserve exact question numbering (e.g., 1, 2, 3A, 3B, 4) from the source document
-6. Identify question types: "MCQ" (multiple choice) or "Open-ended"
-7. For MCQ: extract ALL options (typically A, B, C, D) and the correct answer. Options may appear inline, as a numbered/lettered list, or in other formats - adapt accordingly
-8. For Open-ended: extract the model answer if provided
-9. Preserve formatting of mathematical expressions, formulas, and special characters
-10. If a question has multiple parts (A, B, C), treat each as a separate question with the same number
-11. If you see "[IMAGE]", "[DIAGRAM]", or visual elements, note it in the image field
-12. Extract the EXACT text of questions and answers - do not paraphrase, summarize, or modify
+1. Extract ONLY questions that appear in the image - DO NOT generate, invent, or create sample questions
+2. **COVER PAGES**: If the page shows only student information fields (Name, Student ID, Date, Class, etc.) or instructions without actual questions, return an empty questions array: {"subject": "Unknown", "name": "Cover Page", "estimatedGrade": "Unknown", "questions": []}
+3. If the image contains insufficient content or no questions, return an empty questions array
+4. Analyze the image from TOP to BOTTOM, LEFT to RIGHT, following natural reading order
+5. QUESTION NUMBERING: Question numbers typically appear on the left margin or embedded in text (e.g., "1.", "Q1:", "Question 1")
+6. Preserve exact question numbering including sub-parts with MULTIPLE notations:
+   - Uppercase letters: 3A, 3B, 3C
+   - Lowercase letters: 5a, 5b, 5c  
+   - Lowercase roman numerals: 7i, 7ii, 7iii, 7iv, 7v
+   - CRITICAL: Smartly infer which notation is used based on context:
+     * If you see sequential letters (a, b, c), it's likely alphabetic
+     * If you see "i, ii, iii", it's roman numerals (NOT letters i, j, k)
+     * Roman numerals: i=1, ii=2, iii=3, iv=4, v=5, vi=6, vii=7, viii=8, ix=9, x=10
+7. Identify question types: "MCQ" (multiple choice) or "Open-ended"
+8. For MCQ: extract ALL options (A, B, C, D, etc.) and identify the correct answer if marked
+9. For Open-ended: extract model answer if provided (often on separate answer pages)
+10. VISUAL ELEMENTS: If you see diagrams, charts, mathematical figures, or images:
+   - Note "[DIAGRAM PRESENT]" or "[IMAGE PRESENT]" in the image field
+   - Include any labels, captions, or references in the question text
+11. Preserve ALL mathematical notation, formulas, and special characters exactly as shown
+12. **MULTI-PART QUESTIONS WITH CONTEXT**: When a parent question provides context for sub-parts:
+    - EXAMPLE: "13. School A has 3064 books. School B has 4 times as many."
+      - "a) How many more books does School B have?"
+      - "b) How many books does School B have?"
+    - **For the FIRST sub-part (a/A/i)**: COMBINE parent context + sub-part question
+      - Extract as: "School A has 3064 books. School B has 4 times as many. How many more books does School B have?"
+    - **For subsequent sub-parts (b/B/ii, c/C/iii, ...)**: Extract ONLY the sub-part question
+      - Extract as: "How many books does School B have?" (they can reference previous parts for context)
+    - Sub-parts can be: uppercase (A,B,C), lowercase (a,b,c), or roman (i,ii,iii,iv,v)
+    - This ensures the first sub-part has all necessary context while avoiding redundancy
+
+13. **COMPREHENSION PASSAGES (English/Chinese)**:
+    - When you see a reading passage or text block followed by multiple questions about it:
+      * Treat the questions as sub-parts even if NOT notated as such (e.g., Q1, Q2, Q3 after a passage)
+      * **For the FIRST question**: Include the FULL passage text in the question text field
+      * **For subsequent questions**: Extract only the question (they reference the passage from Q1)
+      * Mark these questions with "[COMPREHENSION]" in the image field
+    - **Fill-in-the-blanks passages**: If a passage has numbered blanks (1), (2), (3):
+      * Determine if MCQ (options shown) or Open-ended (no options)
+      * Each blank is a separate question
+      * **For blank (1)**: Include the FULL passage with all blanks marked
+      * **For blanks (2), (3), etc.**: Extract only "Fill in blank (X)"
+
+14. Extract the EXACT text - do not paraphrase or modify
 
 GRADE LEVEL AWARENESS (Primary P1-P6, Secondary S1-S4/S5):
-- Primary papers may contain simple diagrams, pictures of objects, animals, trains, everyday items
-- Secondary papers may contain complex graphs, technical diagrams, scientific illustrations
+- Primary papers: Simple diagrams, pictures of everyday objects, animals, basic math operations
+- Secondary papers: Complex graphs, technical diagrams, scientific illustrations, advanced formulas
 - Adjust complexity expectations accordingly
 
-SUBJECT-SPECIFIC ATTENTION:
-- **Mathematics**: Pay special attention to:
-  * Fractions (1/2, 3/4, etc.) and mixed numbers
-  * Mathematical symbols (÷, ×, √, π, ², ³)
-  * Equations and algebraic expressions
-  * Geometric shapes and measurements
-  * Word problems with numerical data
+SUBJECT-SPECIFIC VISUAL ANALYSIS:
+- **Mathematics**: Look for:
+  * Fractions, mixed numbers, algebraic expressions
+  * Mathematical symbols (÷, ×, √, π, ², ³, ∫, ∑)
+  * Geometric diagrams with angles, shapes, measurements
+  * Graphs, charts, coordinate planes
+  * Number lines, tables, data representations
+  * **DIAGRAMS FOR INTERACTION**: Lower grade papers often have diagrams/grids for students to draw/mark
+    - If multiple questions reference the same diagram/table, include "[DIAGRAM: description]" in FIRST question
+    - AI should consider these visuals when suggesting or verifying answers
   
-- **Chinese**: Pay special attention to:
-  * Simplified Chinese characters (简体字)
-  * Pinyin annotations
-  * Character stroke order questions
-  * Reading comprehension passages in Chinese
-  * Fill-in-the-blank with Chinese characters
+- **Chinese**: Look for:
+  * Simplified Chinese characters (简体字) - questions can be VERY SHORT (1-3 characters)
+  * Pinyin annotations above characters
+  * Stroke order diagrams
+  * Reading passages in Chinese (comprehension format)
+  * Fill-in-the-blank exercises with passages
+  * **COMPREHENSION**: Group questions that belong to the same passage (see Rule 13)
   
-- **English**: Pay special attention to:
-  * Grammar questions (tenses, prepositions, articles)
-  * Vocabulary and spelling
-  * Comprehension passages
-  * Sentence construction
+- **English**: Look for:
+  * Grammar exercises (tenses, prepositions, articles)
+  * Vocabulary questions with word banks
+  * Reading comprehension passages
+  * Sentence structure and punctuation
+  * **COMPREHENSION**: Group questions that belong to the same passage (see Rule 13)
+  * **CLOZE PASSAGES**: Fill-in-the-blanks with numbered blanks in a paragraph
   
-- **Science**: Pay special attention to:
-  * Diagrams of plants, animals, human body
-  * Scientific apparatus and experiments
-  * Charts, tables, and data interpretation
-  * Technical terminology
+- **Science**: Look for:
+  * Labeled diagrams (plants, animals, human anatomy)
+  * Experimental setups and apparatus
+  * Data tables, bar charts, line graphs
+  * Process diagrams (water cycle, food chains)
+  * **CRITICAL**: Science questions are HEAVILY diagram-dependent
+    - If 3-5 questions share a diagram (e.g., "Based on Figure 1...")
+    - Include "[DIAGRAM: detailed description]" in the FIRST question of the group
+    - Example: "[DIAGRAM: Plant cell showing nucleus, chloroplast, cell wall, vacuole]"
+    - AI must use this visual context when suggesting/verifying answers
 
-IMAGE/DIAGRAM RECOGNITION:
-- If you see references to images, diagrams, charts, graphs, or visual elements
-- If text refers to "the picture above", "the diagram below", "refer to Figure 1"
-- If you see [IMAGE], [DIAGRAM], [CHART], etc.
-- Note this in the image field as "[VISUAL ELEMENT PRESENT]"
+VISUAL ELEMENT DETECTION:
+- Identify ALL diagrams, charts, graphs, illustrations, or images in the page
+- When a question references "the diagram above/below", "Figure 1", "the picture", etc.
+- Mark in the image field: "[DIAGRAM: brief description]" (e.g., "[DIAGRAM: Triangle with angles]")
+- For questions without visual elements, set image field to null
 
 SUBJECTS: Mathematics, English, Chinese (Simplified Mandarin), Science
 
-WARNING: Never fabricate questions. If the provided text is unclear, incomplete, or contains no questions, return {"subject": "Unknown", "name": "Insufficient content", "estimatedGrade": "Unknown", "questions": []}
+WARNING: Never fabricate questions. If the image is unclear or contains no questions, return {"subject": "Unknown", "name": "Insufficient content", "estimatedGrade": "Unknown", "questions": []}
 
 IMPORTANT: Return ONLY valid JSON matching the exact schema. No additional text or explanation.`;
 
 /**
- * Create user prompt for a specific chunk
+ * Legacy system prompt for text-based parsing (kept for backward compatibility)
+ */
+export const SYSTEM_PROMPT = VISION_SYSTEM_PROMPT;
+
+/**
+ * Create user prompt for vision-based page analysis
+ * @param pageNumber - Current page number
+ * @param totalPages - Total number of pages
+ * @returns Formatted prompt string
+ */
+export function createVisionPrompt(
+  pageNumber: number,
+  totalPages: number
+): string {
+  return `Analyze this exam paper image (page ${pageNumber} of ${totalPages}).
+
+EXTRACT ALL QUESTIONS visible on this page following these rules:
+1. Read the image from TOP to BOTTOM, LEFT to RIGHT
+2. Extract ONLY questions actually present - do not invent any
+3. Preserve exact question numbers and sub-parts (e.g., 1, 2A, 2B, 3)
+4. For MCQ: extract all options (A, B, C, D) exactly as shown
+5. For diagrams/images: note "[DIAGRAM: description]" in the image field
+6. Copy ALL text exactly - do not paraphrase
+
+Return JSON in this exact structure:
+{
+  "subject": "Mathematics | English | Chinese | Science | Unknown",
+  "name": "Exam name from header/title (e.g., '2024 P4 Math Midterm')",
+  "estimatedGrade": "P1-P6 | S1-S5 | Unknown",
+  "questions": [
+    {
+      "number": 1,
+      "part": null,
+      "text": "Question text exactly as shown in image",
+      "type": "MCQ",
+      "options": ["A) First option", "B) Second option", "C) Third option", "D) Fourth option"],
+      "correctAnswer": "B) Second option",
+      "image": null
+    },
+    {
+      "number": 2,
+      "part": "A",
+      "text": "Question 2A text exactly as shown",
+      "type": "Open-ended",
+      "options": [],
+      "correctAnswer": "Model answer if visible on page",
+      "image": "[DIAGRAM: Triangle ABC with angles marked]"
+    }
+  ]
+}
+
+IMPORTANT:
+- If no questions are visible on this page, return {"subject": "Unknown", "name": "No questions", "estimatedGrade": "Unknown", "questions": []}
+- Return ONLY the JSON object, no additional text`;
+}
+
+/**
+ * Create user prompt for text-based chunk analysis (legacy/fallback)
  * @param chunkContent - Preprocessed text content
  * @param chunkIndex - Current chunk number (0-based)
  * @param totalChunks - Total number of chunks
@@ -1005,6 +1481,106 @@ export async function parseWithGPT4(
   }
 }
 
+/**
+ * Parse exam page using GPT-4o Vision
+ * @param imageBase64 - Base64-encoded image of the page
+ * @param pageNumber - Current page number
+ * @param totalPages - Total number of pages
+ * @returns Parsed exam data
+ */
+export async function parsePageWithGPT4Vision(
+  imageBase64: string,
+  pageNumber: number,
+  totalPages: number
+): Promise<ParsedExam> {
+  const openai = getOpenAIClient();
+  
+  console.log(`🤖 Parsing page ${pageNumber}/${totalPages} with GPT-4o Vision...`);
+  
+  try {
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o', // GPT-4o with vision capabilities
+      messages: [
+        {
+          role: 'system',
+          content: VISION_SYSTEM_PROMPT,
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: createVisionPrompt(pageNumber, totalPages),
+            },
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:image/png;base64,${imageBase64}`,
+                detail: 'high', // High detail for better accuracy on complex diagrams
+              },
+            },
+          ],
+        },
+      ],
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'exam_parser_vision',
+          strict: true,
+          schema: {
+            type: 'object',
+            properties: {
+              subject: {
+                type: 'string',
+                enum: ['Mathematics', 'English', 'Chinese', 'Science', 'Unknown'],
+              },
+              name: { type: 'string' },
+              estimatedGrade: { type: 'string' },
+              questions: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    number: { type: 'integer' },
+                    part: { type: ['string', 'null'] },
+                    text: { type: 'string' },
+                    type: { type: 'string', enum: ['MCQ', 'Open-ended'] },
+                    options: {
+                      type: 'array',
+                      items: { type: 'string' },
+                    },
+                    correctAnswer: { type: 'string' },
+                    image: { type: ['string', 'null'] },
+                  },
+                  required: ['number', 'part', 'text', 'type', 'options', 'correctAnswer', 'image'],
+                  additionalProperties: false,
+                },
+              },
+            },
+            required: ['subject', 'name', 'estimatedGrade', 'questions'],
+            additionalProperties: false,
+          },
+        },
+      },
+      max_tokens: 4096,
+      temperature: 0.1, // Low temperature for consistency
+    });
+
+    const content = completion.choices[0].message.content;
+    if (!content) {
+      throw new Error('No response from GPT-4o Vision');
+    }
+
+    const parsed = JSON.parse(content) as ParsedExam;
+    console.log(`  ✅ Page ${pageNumber}: Extracted ${parsed.questions.length} questions`);
+    
+    return parsed;
+  } catch (error) {
+    console.error(`❌ GPT-4o Vision parsing failed for page ${pageNumber}:`, error);
+    throw error;
+  }
+}
+
 // ============================================================================
 // Step 7: Anthropic Claude Integration
 // ============================================================================
@@ -1025,7 +1601,7 @@ function getAnthropicClient(): Anthropic {
       console.log('🔗 Using Vercel AI Gateway for Anthropic requests');
       anthropicClient = new Anthropic({
         apiKey: gatewayApiKey,
-        baseURL: 'https://ai-gateway.vercel.sh',
+        baseURL: 'https://ai-gateway.vercel.sh/v1',
       });
     } else {
       // Direct mode: Requires local API key
@@ -1090,12 +1666,96 @@ export async function parseWithClaude(
 }
 
 /**
- * Parse exam chunk using the configured LLM provider
+ * Parse exam page using Claude 3.5 Sonnet Vision
+ * @param imageBase64 - Base64-encoded image of the page
+ * @param pageNumber - Current page number
+ * @param totalPages - Total number of pages
+ * @returns Parsed exam data
+ */
+export async function parsePageWithClaudeVision(
+  imageBase64: string,
+  pageNumber: number,
+  totalPages: number
+): Promise<ParsedExam> {
+  const anthropic = getAnthropicClient();
+  
+  console.log(`🤖 Parsing page ${pageNumber}/${totalPages} with Claude Vision...`);
+  
+  try {
+    const message = await anthropic.messages.create({
+      model: 'claude-3-5-sonnet-20241022',
+      max_tokens: 8000,
+      system: VISION_SYSTEM_PROMPT,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/png',
+                data: imageBase64,
+              },
+            },
+            {
+              type: 'text',
+              text: createVisionPrompt(pageNumber, totalPages),
+            },
+          ],
+        },
+      ],
+    });
+
+    const content = message.content[0];
+    if (content.type !== 'text') {
+      throw new Error('Unexpected response type from Claude Vision');
+    }
+
+    // Extract JSON from response (Claude may add explanation text)
+    const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('No JSON found in Claude Vision response');
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]) as ParsedExam;
+    console.log(`  ✅ Page ${pageNumber}: Extracted ${parsed.questions.length} questions`);
+    
+    return parsed;
+  } catch (error) {
+    console.error(`❌ Claude Vision parsing failed for page ${pageNumber}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Parse exam page using vision-capable LLM
+ * @param imageBase64 - Base64-encoded image of the page
+ * @param pageNumber - Current page number
+ * @param totalPages - Total number of pages
+ * @param provider - LLM provider to use ('openai' or 'anthropic')
+ * @returns Parsed exam data
+ */
+export async function parsePageWithVision(
+  imageBase64: string,
+  pageNumber: number,
+  totalPages: number,
+  provider: 'openai' | 'anthropic' = 'openai'
+): Promise<ParsedExam> {
+  if (provider === 'openai') {
+    return parsePageWithGPT4Vision(imageBase64, pageNumber, totalPages);
+  } else {
+    return parsePageWithClaudeVision(imageBase64, pageNumber, totalPages);
+  }
+}
+
+/**
+ * Parse exam chunk using the configured LLM provider (text-based, legacy)
  * @param chunkContent - Preprocessed text content
  * @param chunkIndex - Current chunk number (0-based)
  * @param totalChunks - Total number of chunks
  * @param provider - LLM provider to use ('openai' or 'anthropic')
- * @returns Parsed exam data
+``` * @returns Parsed exam data
  */
 export async function parseChunkWithLLM(
   chunkContent: string,
@@ -1347,9 +2007,16 @@ export function validateParsedExam(data: unknown): ParsedExam {
         throw new Error(`Question ${q.number}${q.part || ''} has invalid number`);
       }
       
-      // Validate part format (should be single letter A-Z or null)
-      if (q.part !== null && !/^[A-Z]$/.test(q.part)) {
-        console.warn(`⚠️  Question ${q.number}${q.part}: Part should be single letter A-Z, got "${q.part}"`);
+      // Validate part format (supports uppercase, lowercase, and roman numerals)
+      // Valid formats: A-Z, a-z, i, ii, iii, iv, v, vi, vii, viii, ix, x, etc.
+      if (q.part !== null) {
+        const isUppercase = /^[A-Z]$/.test(q.part);
+        const isLowercase = /^[a-z]$/.test(q.part);
+        const isRoman = /^(i|ii|iii|iv|v|vi|vii|viii|ix|x|xi|xii)$/i.test(q.part);
+        
+        if (!isUppercase && !isLowercase && !isRoman) {
+          console.warn(`⚠️  Question ${q.number}${q.part}: Part should be single letter (A-Z, a-z) or roman numeral (i-xii), got "${q.part}"`);
+        }
       }
     });
     
@@ -1491,8 +2158,74 @@ function mergeExamResults(
   return merged;
 }
 
+// ============================================================================
+// Step 8: Retry Logic and Validation
+// ============================================================================
+
 /**
- * Parse chunk with retry logic and validation
+ * Parse exam page with retry logic (vision-based)
+ * @param imageBase64 - Base64-encoded image of the page
+ * @param pageNumber - Current page number
+ * @param totalPages - Total number of pages
+ * @param provider - LLM provider to use ('openai', 'anthropic', or 'both')
+ * @param maxRetries - Maximum retry attempts
+ * @returns Parsed exam data
+ */
+export async function parsePageWithVisionRetry(
+  imageBase64: string,
+  pageNumber: number,
+  totalPages: number,
+  provider: 'openai' | 'anthropic' | 'both' = 'both',
+  maxRetries: number = 3
+): Promise<ParsedExam> {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      if (attempt > 0) {
+        console.log(`  🔄 Retry attempt ${attempt + 1}/${maxRetries}...`);
+        // Exponential backoff
+        await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+      }
+      
+      // Default to 'both' which means: try GPT-4o FIRST, then Claude ONLY if it fails
+      // This reduces API costs by preferring the primary model
+      let parsed: ParsedExam;
+      
+      if (provider === 'both') {
+        try {
+          parsed = await parsePageWithVision(imageBase64, pageNumber, totalPages, 'openai');
+          console.log(`  ✅ Page ${pageNumber} parsed with GPT-4o Vision`);
+        } catch (error) {
+          console.warn(`  ⚠️  OpenAI Vision failed, trying Claude Vision as fallback...`);
+          parsed = await parsePageWithVision(imageBase64, pageNumber, totalPages, 'anthropic');
+          console.log(`  ✅ Page ${pageNumber} parsed with Claude Vision (fallback)`);
+        }
+      } else {
+        parsed = await parsePageWithVision(imageBase64, pageNumber, totalPages, provider);
+      }
+      
+      const validated = validateParsedExam(parsed);
+      
+      // Check if this is a cover page or page with no questions
+      if (validated.questions.length === 0) {
+        console.log(`  📄 Page ${pageNumber} has no questions (likely cover page or instructions) - skipping`);
+      } else {
+        console.log(`  ✅ Page ${pageNumber} validated successfully with ${validated.questions.length} questions`);
+      }
+      return validated;
+      
+    } catch (error) {
+      lastError = error as Error;
+      console.error(`  ❌ Attempt ${attempt + 1} failed:`, error instanceof Error ? error.message : error);
+    }
+  }
+  
+  throw new Error(`Failed to parse page ${pageNumber} after ${maxRetries} attempts: ${lastError?.message}`);
+}
+
+/**
+ * Parse chunk with retry logic and validation (text-based, legacy)
  * @param chunkContent - Preprocessed text content
  * @param chunkIndex - Current chunk number (0-based)
  * @param totalChunks - Total number of chunks
@@ -1604,6 +2337,279 @@ export function mergeExamChunks(chunks: ParsedExam[]): ParsedExam {
 }
 
 // ============================================================================
+// Answer Detection and Matching
+// ============================================================================
+
+/**
+ * Answer page detection prompt
+ */
+export const ANSWER_DETECTION_PROMPT = `You are an expert at detecting and extracting answer keys from exam papers.
+
+Analyze this page and:
+1. Determine if this page contains ANSWERS (not questions)
+2. If yes, extract ALL answers with their question numbers
+3. If no, return an empty array
+
+ANSWER PAGE INDICATORS:
+- Headers like "Answers", "Answer Key", "Solutions", "解答" (Chinese)
+- Lists of question numbers with their answers
+- Answer sections at the end of exam papers
+- Model answers or marking schemes
+
+Return JSON in this structure:
+{
+  "isAnswerPage": true/false,
+  "answers": [
+    {
+      "number": 1,
+      "part": null,
+      "answer": "The complete answer text or correct option"
+    },
+    {
+      "number": 2,
+      "part": "A",
+      "answer": "Answer for question 2A"
+    },
+    {
+      "number": 2,
+      "part": "B",
+      "answer": "Answer for question 2B"
+    }
+  ]
+}
+
+IMPORTANT:
+- Extract answers EXACTLY as shown
+- Preserve question numbering and parts (A, B, C, etc.)
+- For MCQ answers: extract the full option text (e.g., "B) Second option") OR just the letter if that's all that's shown
+- If this is NOT an answer page, return {"isAnswerPage": false, "answers": []}
+- Return ONLY the JSON object, no additional text`;
+
+/**
+ * Answer schema
+ */
+const AnswerSchema = z.object({
+  number: z.number(),
+  part: z.string().nullable().transform(val => val || null),
+  answer: z.string(),
+});
+
+const AnswerPageSchema = z.object({
+  isAnswerPage: z.boolean(),
+  answers: z.array(AnswerSchema),
+});
+
+type AnswerPageResult = z.infer<typeof AnswerPageSchema>;
+type ExtractedAnswer = z.infer<typeof AnswerSchema>;
+
+/**
+ * Detect if a page contains answers and extract them
+ * @param imageBase64 - Base64-encoded image of the page
+ * @param pageNumber - Current page number
+ * @param provider - LLM provider to use
+ * @returns Answer page result
+ */
+export async function detectAnswerPage(
+  imageBase64: string,
+  pageNumber: number,
+  provider: 'openai' | 'anthropic' = 'openai'
+): Promise<AnswerPageResult> {
+  console.log(`  🔍 Checking page ${pageNumber} for answers...`);
+  
+  try {
+    if (provider === 'openai') {
+      const openai = getOpenAIClient();
+      
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: [
+          {
+            role: 'system',
+            content: ANSWER_DETECTION_PROMPT,
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: `Analyze this page (page ${pageNumber}) and detect if it contains answers.`,
+              },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: `data:image/png;base64,${imageBase64}`,
+                  detail: 'high',
+                },
+              },
+            ],
+          },
+        ],
+        max_tokens: 2000,
+        temperature: 0.1,
+      });
+      
+      const content = response.choices[0]?.message?.content;
+      if (!content) {
+        throw new Error('No response from OpenAI');
+      }
+      
+      // Strip markdown code blocks if present
+      let jsonString = content.trim();
+      if (jsonString.startsWith('```json')) {
+        jsonString = jsonString.replace(/^```json\s*/, '').replace(/```\s*$/, '').trim();
+      } else if (jsonString.startsWith('```')) {
+        jsonString = jsonString.replace(/^```\s*/, '').replace(/```\s*$/, '').trim();
+      }
+      
+      const parsed = JSON.parse(jsonString);
+      const validated = AnswerPageSchema.parse(parsed);
+      
+      if (validated.isAnswerPage) {
+        console.log(`  ✅ Page ${pageNumber}: Answer page detected (${validated.answers.length} answers)`);
+      } else {
+        console.log(`  ℹ️  Page ${pageNumber}: Not an answer page`);
+      }
+      
+      return validated;
+      
+    } else {
+      // Anthropic Claude Vision
+      const anthropic = getAnthropicClient();
+      
+      const response = await anthropic.messages.create({
+        model: 'claude-3-5-sonnet-20241022',
+        max_tokens: 2000,
+        temperature: 0.1,
+        system: ANSWER_DETECTION_PROMPT,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: 'image/png',
+                  data: imageBase64,
+                },
+              },
+              {
+                type: 'text',
+                text: `Analyze this page (page ${pageNumber}) and detect if it contains answers.`,
+              },
+            ],
+          },
+        ],
+      });
+      
+      const content = response.content[0];
+      if (content.type !== 'text') {
+        throw new Error('Unexpected response type from Claude');
+      }
+      
+      // Strip markdown code blocks if present
+      let jsonString = content.text.trim();
+      if (jsonString.startsWith('```json')) {
+        jsonString = jsonString.replace(/^```json\s*/, '').replace(/```\s*$/, '').trim();
+      } else if (jsonString.startsWith('```')) {
+        jsonString = jsonString.replace(/^```\s*/, '').replace(/```\s*$/, '').trim();
+      }
+      
+      const parsed = JSON.parse(jsonString);
+      const validated = AnswerPageSchema.parse(parsed);
+      
+      if (validated.isAnswerPage) {
+        console.log(`  ✅ Page ${pageNumber}: Answer page detected (${validated.answers.length} answers)`);
+      } else {
+        console.log(`  ℹ️  Page ${pageNumber}: Not an answer page`);
+      }
+      
+      return validated;
+    }
+  } catch (error) {
+    console.warn(`  ⚠️  Answer detection failed for page ${pageNumber}:`, error instanceof Error ? error.message : error);
+    return { isAnswerPage: false, answers: [] };
+  }
+}
+
+/**
+ * Match extracted answers to questions
+ * @param questions - Array of parsed questions
+ * @param answers - Array of extracted answers
+ * @returns Updated questions with matched answers
+ */
+export function matchAnswersToQuestions(
+  questions: ParsedQuestion[],
+  answers: ExtractedAnswer[]
+): ParsedQuestion[] {
+  console.log(`🔗 Matching ${answers.length} answers to ${questions.length} questions...`);
+  
+  let matchCount = 0;
+  
+  for (const answer of answers) {
+    // Find matching question by number and part
+    const matchingQuestion = questions.find(q => 
+      q.number === answer.number && 
+      (q.part === answer.part || (!q.part && !answer.part))
+    );
+    
+    if (matchingQuestion) {
+      // Only update if the question doesn't already have an answer, or if the new answer is more detailed
+      if (!matchingQuestion.correctAnswer || matchingQuestion.correctAnswer.length < answer.answer.length) {
+        matchingQuestion.correctAnswer = answer.answer;
+        matchCount++;
+        console.log(`  ✅ Matched answer to Question ${answer.number}${answer.part ? answer.part : ''}`);
+      }
+    } else {
+      console.warn(`  ⚠️  No matching question found for answer ${answer.number}${answer.part ? answer.part : ''}`);
+    }
+  }
+  
+  console.log(`  ✅ Matched ${matchCount} of ${answers.length} answers`);
+  
+  return questions;
+}
+
+/**
+ * Process answer pages and match to questions
+ * @param pages - Array of page images
+ * @param questions - Array of parsed questions
+ * @param provider - LLM provider to use
+ * @returns Questions with matched answers
+ */
+export async function processAnswerPages(
+  pages: Array<{ pageNumber: number; base64: string }>,
+  questions: ParsedQuestion[],
+  provider: 'openai' | 'anthropic' = 'openai'
+): Promise<ParsedQuestion[]> {
+  console.log('\n📋 Scanning for answer pages...');
+  
+  const allAnswers: ExtractedAnswer[] = [];
+  
+  // Check each page for answers
+  for (const page of pages) {
+    const result = await detectAnswerPage(page.base64, page.pageNumber, provider);
+    
+    if (result.isAnswerPage) {
+      allAnswers.push(...result.answers);
+    }
+    
+    // Small delay to avoid rate limiting
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  
+  if (allAnswers.length === 0) {
+    console.log('  ℹ️  No answer pages detected in this exam');
+    return questions;
+  }
+  
+  console.log(`  ✅ Found ${allAnswers.length} answers across ${pages.filter((_, i) => i < pages.length).length} pages`);
+  
+  // Match answers to questions
+  return matchAnswersToQuestions(questions, allAnswers);
+}
+
+// ============================================================================
 // Step 10: Database Population
 // ============================================================================
 
@@ -1612,7 +2618,7 @@ export function mergeExamChunks(chunks: ParsedExam[]): ParsedExam {
  * Creates or updates exam, questions, and answers
  * @param parsedExam - Validated parsed exam data
  * @param examUrl - URL/path to the uploaded PDF
- * @param imagePaths - Array of extracted image paths
+ * @param questionImagePaths - Array of segmented image paths (one per question, in order)
  * @param ocrText - Extracted OCR text for verification context
  * @param existingExamId - Optional ID of existing exam to update instead of creating new one
  * @returns Exam ID (created or updated)
@@ -1620,7 +2626,7 @@ export function mergeExamChunks(chunks: ParsedExam[]): ParsedExam {
 export async function populateDatabase(
   parsedExam: ParsedExam,
   examUrl: string,
-  imagePaths: string[] = [],
+  questionImagePaths: string[] = [],
   ocrText: string = '',
   existingExamId?: number
 ): Promise<{ examId: number; questionCount: number; answerCount: number }> {
@@ -1677,23 +2683,17 @@ export async function populateDatabase(
     
     // Create questions and answers
     for (const q of parsedExam.questions) {
-      // Estimate page number based on question position
-      // If we have N pages and M questions, estimate which page this question is on
-      const totalQuestions = parsedExam.questions.length;
-      const totalPages = imagePaths.length;
-      
-      // Estimate page for this question (1-indexed)
-      let estimatedPage = 1;
-      if (totalPages > 0 && totalQuestions > 0) {
-        const pageIndex = Math.floor((questionCount / totalQuestions) * totalPages);
-        estimatedPage = Math.min(pageIndex + 1, totalPages);
-      }
-      
-      // Get the image for this specific page
+      // Use pre-segmented image for this specific question
       const questionImages: string[] = [];
-      if (imagePaths.length > 0 && estimatedPage > 0 && estimatedPage <= imagePaths.length) {
-        questionImages.push(imagePaths[estimatedPage - 1]);
+      
+      if (questionImagePaths.length > questionCount && questionImagePaths[questionCount]) {
+        // We have a segmented image for this question
+        questionImages.push(questionImagePaths[questionCount]);
       }
+      
+      // Estimate page number for metadata (based on question position)
+      const totalPages = Math.ceil(parsedExam.questions.length / 2); // Rough estimate: ~2 questions per page
+      const estimatedPage = Math.ceil((questionCount + 1) / 2);
       
       const question = await prisma.question.create({
         data: {
@@ -1702,7 +2702,7 @@ export async function populateDatabase(
           part: q.part,
           text: q.text,
           type: q.type,
-          image: questionImages,
+          image: questionImages, // Now using segmented question-specific image
           pageNumber: estimatedPage,
           options: q.options,
         },
@@ -1847,69 +2847,83 @@ export async function parseExamPDF(
   console.log('='.repeat(60));
   
   try {
-    // Step 1-2: Extract and preprocess text
-    console.log('\n[Step 1-2/11] [18%] Extracting and preprocessing text...');
-    onProgress?.(18, 'Extracting text and images from PDF...');
+    // Step 1: Extract PDF pages as images
+    console.log('\n[Step 1/8] [12%] Extracting PDF pages as images...');
+    onProgress?.(12, '[Step 1/9] Extracting PDF pages as images...');
     
     // Get exam ID first by creating a placeholder or using filename hash
-    const tempExamId = Date.now(); // Temporary ID for image extraction
+    const tempExamId = existingExamId || Date.now(); // Temporary ID for image extraction
     
-    const extracted = await extractAndPreprocess(buffer, filename, tempExamId);
+    // Extract pages for vision processing
+    const pages = await extractPagesAsImages(buffer);
     
-    if (!extracted.text || extracted.text.trim().length < 50) {
-      throw new Error('Insufficient text extracted from PDF');
-    }
+    // Also save page images to disk for frontend display
+    const imagePaths = await extractImagesFromPDF(buffer, tempExamId);
     
-    console.log(`✅ Extracted ${extracted.characterCount} characters`);
-    console.log(`✅ Method: ${extracted.method.toUpperCase()}`);
-    console.log(`✅ Images: ${extracted.imagePaths.length}`);
+    console.log(`✅ Extracted ${pages.length} pages`);
+    console.log(`✅ Saved ${imagePaths.length} page images`);
     
-    // Step 3: Chunk exam paper
-    console.log('\n[Step 3/11] [27%] Chunking exam paper...');
-    onProgress?.(27, `Processing exam with ${extracted.imagePaths.length} images...`);
-    const chunks = chunkExamPaper(extracted.text, 6000);
-    const validation = validateChunks(chunks);
+    // Step 2-5: Parse each page with Vision LLM
+    console.log(`\n[Step 2-5/9] [25-75%] Parsing ${pages.length} page(s) with ${provider.toUpperCase()} Vision...`);
+    onProgress?.(25, `[Step 2-5/9] Parsing ${pages.length} page(s) with Vision...`);
+    const parsedPages: ParsedExam[] = [];
     
-    if (!validation.valid) {
-      console.warn('⚠️  Chunk validation warnings:', validation.issues);
-    }
-    
-    // Step 4-7: Parse with LLM
-    console.log(`\n[Step 4-7/11] [36-72%] Parsing ${chunks.length} chunk(s) with ${provider.toUpperCase()}...`);
-    onProgress?.(36, `Parsing ${chunks.length} section(s) with AI...`);
-    const parsedChunks: ParsedExam[] = [];
-    
-    for (let i = 0; i < chunks.length; i++) {
-      const chunkProgress = 36 + Math.floor((36 / chunks.length) * i);
-      console.log(`\n  📦 Chunk ${i + 1}/${chunks.length} [${chunkProgress}%] (${chunks[i].estimatedQuestions} questions, ${chunks[i].tokenCount} tokens)`);
-      onProgress?.(chunkProgress, `Processing section ${i + 1}/${chunks.length}...`);
+    for (let i = 0; i < pages.length; i++) {
+      const pageProgress = 25 + Math.floor((50 / pages.length) * i);
+      console.log(`\n  📄 Page ${i + 1}/${pages.length} [${pageProgress}%]`);
+      onProgress?.(pageProgress, `📄 Processing page ${i + 1}/${pages.length}...`);
       
-      const parsed = await parseChunkWithRetry(
-        chunks[i].content,
-        i,
-        chunks.length,
+      const parsed = await parsePageWithVisionRetry(
+        pages[i].base64,
+        pages[i].pageNumber,
+        pages.length,
         provider,
         maxRetries
       );
       
-      parsedChunks.push(parsed);
+      parsedPages.push(parsed);
       
-      // Rate limiting: wait 1 second between chunks to avoid hitting API limits
-      if (i < chunks.length - 1) {
-        console.log('  ⏳ Waiting 1s before next chunk...');
+      // Rate limiting: wait 1 second between pages to avoid hitting API limits
+      if (i < pages.length - 1) {
+        console.log('  ⏳ Waiting 1s before next page...');
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
     
-    console.log(`\n✅ Successfully parsed all ${parsedChunks.length} chunks`);
+    console.log(`\n✅ Successfully parsed all ${parsedPages.length} pages`);
     
-    // Step 9: Merge chunks
-    console.log('\n[Step 9/11] [81%] Merging chunks...');
-    onProgress?.(81, 'Merging parsed sections...');
-    const mergedExam = mergeExamChunks(parsedChunks);
+    // Filter out pages with no questions (cover pages, instruction pages)
+    const pagesWithQuestions = parsedPages.filter(page => page.questions.length > 0);
+    console.log(`  📊 Pages with questions: ${pagesWithQuestions.length}/${parsedPages.length}`);
+    
+    if (pagesWithQuestions.length === 0) {
+      throw new Error('No questions found in any page. This may be a cover page or instruction sheet only.');
+    }
+    
+    // Step 6: Merge pages
+    console.log('\n[Step 6/9] [70%] Merging pages...');
+    onProgress?.(70, '[Step 6/9] Merging parsed pages...');
+    const mergedExam = mergeExamChunks(pagesWithQuestions); // Reuse chunk merging logic for pages
     
     // Validate merged exam
-    const validatedExam = validateParsedExam(mergedExam);
+    let validatedExam = validateParsedExam(mergedExam);
+    
+    // Step 6.5: Process answer pages
+    console.log('\n[Step 6.5/9] [75%] Detecting answers from exam pages...');
+    onProgress?.(75, '[Step 6.5/9] Detecting answers from exam pages...');
+    
+    // Process answer pages to populate correctAnswer fields
+    const questionsWithAnswers = await processAnswerPages(
+      pages,
+      validatedExam.questions,
+      provider === 'both' ? 'openai' : provider
+    );
+    
+    // Update validated exam with matched answers
+    validatedExam = {
+      ...validatedExam,
+      questions: questionsWithAnswers,
+    };
     
     // Calculate metadata
     const metadata: ExamMetadata = {
@@ -1918,16 +2932,31 @@ export async function parseExamPDF(
       openEndedCount: validatedExam.questions.filter(q => q.type === 'Open-ended').length,
     };
     
-    // Step 10: Populate database
-    console.log('\n[Step 10/11] [90%] Populating database...');
-    onProgress?.(90, 'Saving to database...');
-    const dbResult = await populateDatabase(validatedExam, examUrl, extracted.imagePaths, extracted.text, existingExamId);
+    // Log answer detection results
+    const questionsWithDetectedAnswers = validatedExam.questions.filter(q => q.correctAnswer && q.correctAnswer.trim().length > 0).length;
+    console.log(`  📊 Answers detected: ${questionsWithDetectedAnswers}/${validatedExam.questions.length} questions`);
+    
+    // Step 7: Create question-specific image segments
+    console.log('\n[Step 7/9] [85%] Creating question segments...');
+    onProgress?.(85, '[Step 7/9] Creating question segments...');
+    const questionImagePaths = await createQuestionSegments(
+      validatedExam.questions,
+      tempExamId,
+      pages.length
+    );
+    
+    // Step 8: Populate database
+    console.log('\n[Step 8/9] [90%] Populating database...');
+    onProgress?.(90, '[Step 8/9] Populating database...');
+    // Create a placeholder OCR text from extracted pages (empty since we're using vision)
+    const ocrText = `Vision-based extraction from ${pages.length} pages`;
+    const dbResult = await populateDatabase(validatedExam, examUrl, questionImagePaths, ocrText, existingExamId);
     
     const processingTime = Date.now() - startTime;
     
     // Final summary
-    console.log('\n[Step 11/11] [100%] Complete!');
-    onProgress?.(100, 'Parsing complete!');
+    console.log('\n[Step 9/9] [100%] Complete!');
+    onProgress?.(100, '[Step 9/9] ✅ Parsing complete!');
     console.log('\n' + '='.repeat(60));
     console.log('✅ PARSING COMPLETE');
     console.log('='.repeat(60));
@@ -1936,8 +2965,9 @@ export async function parseExamPDF(
     console.log(`📊 Name: ${validatedExam.name}`);
     console.log(`📊 Grade: ${validatedExam.estimatedGrade}`);
     console.log(`📊 Questions: ${metadata.totalQuestions} (${metadata.mcqCount} MCQ, ${metadata.openEndedCount} Open-ended)`);
+    console.log(`📊 Answers Detected: ${questionsWithDetectedAnswers}/${metadata.totalQuestions}`);
     console.log(`📊 Processing Time: ${(processingTime / 1000).toFixed(2)}s`);
-    console.log(`📊 Method: ${extracted.method.toUpperCase()}`);
+    console.log(`📊 Method: VISION (GPT-4o / Claude 3.5)`);
     console.log(`📊 Provider: ${provider.toUpperCase()}`);
     console.log('='.repeat(60) + '\n');
     
